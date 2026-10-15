@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>CrunchDrive</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="$(KSPDIR)\KSP_x64_Data\Managed\Assembly-CSharp.dll"><Private>false</Private></Reference>
+    <Reference Include="$(KSPDIR)\KSP_x64_Data\Managed\UnityEngine*.dll"><Private>false</Private></Reference>
+  </ItemGroup>
+  <Target Name="CheckKsp" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(KSPDIR)'==''" Text="Create KSP.local.props (see KSP.local.props.example)." />
+  </Target>
+  <Target Name="CopyToGameData" AfterTargets="Build">
+    <Copy SourceFiles="$(OutDir)CrunchDrive.dll" DestinationFolder="$(RepoGameData)Plugins" />
+  </Target>
+</Project>

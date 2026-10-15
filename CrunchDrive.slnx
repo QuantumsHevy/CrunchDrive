@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/CrunchDrive/CrunchDrive.csproj" />
+  <Project Path="tests/CrunchDrive.Core.Tests/CrunchDrive.Core.Tests.csproj" />
+</Solution>

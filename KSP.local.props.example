@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <KSPDIR>C:\Path\To\Your\KSP\Install</KSPDIR>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,6 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)KSP.local.props" Condition="Exists('$(MSBuildThisFileDirectory)KSP.local.props')" />
+  <PropertyGroup>
+    <RepoGameData>$(MSBuildThisFileDirectory)GameData\CrunchDrive\</RepoGameData>
+  </PropertyGroup>
+</Project>

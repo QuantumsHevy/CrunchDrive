@@ -1,4 +1,3 @@
-using System;
 using UnityEngine;
 
 namespace CrunchDrive
@@ -11,6 +10,8 @@ namespace CrunchDrive
         Rect rect = new Rect(50, 50, 460, 0);
         GUIStyle wrapToggle;
         GUIStyle wrapLabel;
+        bool showDuration;   // Fixed-time controls visible. Only changes during the layout pass (see Draw).
+        bool showTwoLegHint;
 
         void Update()
         {
@@ -34,48 +35,62 @@ namespace CrunchDrive
                 wrapLabel.wordWrap = true;
             }
 
+            rect.height = 0f;   // IMGUI windows only ever grow; reset the height so it re-fits its contents every frame.
             rect = GUILayout.Window(GetInstanceID(), rect, Draw, CrunchText.WindowTitle);
         }
 
         void Draw(int id)
         {
             GUILayout.Label(CrunchController.Status, wrapLabel);
+            if (!string.IsNullOrEmpty(CrunchController.TargetLine))   // Empty while the status readout already shows the target.
+                GUILayout.Label(CrunchController.TargetLine, wrapLabel);
 
             CrunchPhase phase = CrunchController.CurrentPhase;
 
             // Keep controls visible across phases; disable them rather than changing the layout.
-            GUI.enabled = phase != CrunchPhase.Spooling && phase != CrunchPhase.Engaging;
-            if (GUILayout.Button(CrunchText.PrimaryButton(phase, CrunchTuning.Backwards)))
+            GUI.enabled = phase != CrunchPhase.Spooling;
+            if (GUILayout.Button(CrunchText.PrimaryButton(phase, CrunchTuning.Backwards, CrunchController.IsTurning)))
                 CrunchController.PrimaryAction();
 
-            GUI.enabled = phase == CrunchPhase.Spooling || phase == CrunchPhase.Ready || phase == CrunchPhase.Engaging;
+            GUI.enabled = phase == CrunchPhase.Spooling || phase == CrunchPhase.Ready;
             if (GUILayout.Button(CrunchText.ButtonCancel))
                 CrunchController.Cancel();
 
+            // IMGUI lays controls out in one pass and draws them in another, so a control may only appear or
+            // disappear between frames. Latch what is visible during the layout pass, then use it for the whole frame.
+            if (Event.current.type == EventType.Layout)
+            {
+                showDuration = CrunchTuning.Mode == TravelMode.FixedDuration;
+                showTwoLegHint = CrunchTuning.TwoLegManeuver;
+            }
+
             GUI.enabled = phase != CrunchPhase.Crunching;
             CrunchTuning.Backwards = GUILayout.Toggle(CrunchTuning.Backwards, CrunchText.ToggleBackwards, wrapToggle);
-            CrunchTuning.SpoolSeconds = Linear(CrunchText.SliderSpool, CrunchTuning.SpoolSeconds, 0, 30);
-            CrunchTuning.EngageDelaySeconds = Linear(CrunchText.SliderEngageDelay, CrunchTuning.EngageDelaySeconds, 0, 5);
-            CrunchTuning.CrunchSeconds = Linear(CrunchText.SliderDuration, CrunchTuning.CrunchSeconds, 1, 120);
-            CrunchTuning.SpringStiffness = Linear(CrunchText.SliderSpring, CrunchTuning.SpringStiffness, 2, 20);
-            CrunchTuning.SpringLaunch = Linear(CrunchText.SliderLaunch, CrunchTuning.SpringLaunch, 0, 1);
-            CrunchTuning.EndSpeedFraction = Linear(CrunchText.SliderEndSpeed, CrunchTuning.EndSpeedFraction, 0, 0.5);
-            CrunchTuning.AutoEnd = GUILayout.Toggle(CrunchTuning.AutoEnd, CrunchText.ToggleAutoEnd, wrapToggle);
-            CrunchTuning.AutoEngage = GUILayout.Toggle(CrunchTuning.AutoEngage, CrunchText.ToggleAutoEngage, wrapToggle);
-            CrunchTuning.UseTargetLock = GUILayout.Toggle(CrunchTuning.UseTargetLock, CrunchText.ToggleTargetLock, wrapToggle);
-            CrunchTuning.TargetAlignToleranceDeg = Linear(CrunchText.SliderAlign, CrunchTuning.TargetAlignToleranceDeg, 1, 90);
+            CrunchTuning.CaptureAssist = GUILayout.Toggle(CrunchTuning.CaptureAssist, CrunchText.ToggleCaptureAssist, wrapToggle);
+            CrunchTuning.SasRetrograde = GUILayout.Toggle(CrunchTuning.SasRetrograde, CrunchText.ToggleSasRetrograde, wrapToggle);
+            CrunchTuning.TwoLegManeuver = GUILayout.Toggle(CrunchTuning.TwoLegManeuver, CrunchText.ToggleTwoLeg, wrapToggle);
+            CrunchTuning.UseTurnController = GUILayout.Toggle(CrunchTuning.UseTurnController, CrunchText.ToggleTurnController, wrapToggle);
+            CrunchTuning.AllowInterstellarWarp = GUILayout.Toggle(CrunchTuning.AllowInterstellarWarp, CrunchText.ToggleInterstellarWarp, wrapToggle);
+
+            if (showTwoLegHint) GUILayout.Label(CrunchText.TwoLegHint, wrapLabel);
+            CrunchTuning.Mode = (TravelMode)GUILayout.SelectionGrid((int)CrunchTuning.Mode, CrunchText.ModeNames, 3);
+
+            double tier = CrunchController.PreviewTierC;
+            string info;
+            if (showDuration)
+            {
+                CrunchTuning.CrunchSeconds = Linear(CrunchText.SliderDuration, CrunchTuning.CrunchSeconds, 1, 120);
+                info = CrunchText.DistanceInfo(CrunchTuning.CrunchSeconds, tier);
+            }
+            else
+            {
+                info = CrunchText.ModeHint(CrunchTuning.Mode);
+            }
+            GUILayout.Label(info, wrapLabel);
             GUI.enabled = true;
 
-            double tier = CrunchTuning.UseInterstellarTier ? CrunchTuning.InterstellarTierC : CrunchTuning.InterplanetaryTierC;
-            GUILayout.Label(CrunchText.DistanceInfo(CrunchTuning.CrunchSeconds, tier), wrapLabel);
+            GUILayout.Label(string.Format(CrunchText.LabelTier, tier), wrapLabel);
 
-            GUILayout.Label(string.Format(CrunchText.LabelInterplanetaryFixed, CrunchTuning.InterplanetaryTierC), wrapLabel);
-            CrunchTuning.InterstellarTierC = Log(CrunchText.SliderInterstellar, CrunchTuning.InterstellarTierC, 1e3, 1e7);
-            CrunchTuning.DropoutFraction = Linear(CrunchText.SliderDropout, CrunchTuning.DropoutFraction, 0.02, 0.5);
-
-            CrunchTuning.UseInterstellarTier = GUILayout.Toggle(CrunchTuning.UseInterstellarTier, CrunchText.ToggleInterstellar, wrapToggle);
-
-            if (GUILayout.Button(CrunchText.ButtonExit)) show = false;
             GUI.DragWindow();
         }
 
@@ -83,13 +98,6 @@ namespace CrunchDrive
         {
             GUILayout.Label(label + ": " + v.ToString("G4"));
             return GUILayout.HorizontalSlider((float)v, (float)min, (float)max);
-        }
-
-        static double Log(string label, double v, double min, double max)
-        {
-            GUILayout.Label(label + ": " + v.ToString("G4"));
-            float s = GUILayout.HorizontalSlider((float)Math.Log10(v), (float)Math.Log10(min), (float)Math.Log10(max));
-            return Math.Pow(10, s);
         }
     }
 }

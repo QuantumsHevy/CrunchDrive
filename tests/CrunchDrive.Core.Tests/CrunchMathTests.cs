@@ -20,104 +20,6 @@ public class CrunchMathTests
     public void Segment_missing_sphere_returns_null()
         => Assert.Null(CrunchMath.SweepEntry(new Vec3d(-1e7, 5e6, 0), new Vec3d(1e7, 5e6, 0), new Vec3d(0, 0, 0), 1e6));
 
-    // ---- Spring curve ----
-
-    // Sums the spring displacement over a whole crunch in 0.02 s ticks, with a trimmed final tick.
-    static double SpringTotal(double tierC, double duration, double stiffness, double launch,
-                              out bool allNonNegative, double endSpeed = 0.0)
-    {
-        const double dt = 0.02;
-        double t = 0, total = 0;
-        allNonNegative = true;
-        while (t < duration - 1e-12)
-        {
-            double step = Math.Min(dt, duration - t);
-            double d = CrunchMath.SpringDisplacementPerTick(tierC, t, step, duration, stiffness, launch, endSpeed);
-            if (d < -1e-6) allNonNegative = false;
-            total += d;
-            t += step;
-        }
-        return total;
-    }
-
-    [Theory]
-    [InlineData(2.0, 0.0)]
-    [InlineData(8.0, 0.0)]
-    [InlineData(10.0, 0.0)]
-    [InlineData(5.0, 0.5)]
-    [InlineData(20.0, 1.0)]
-    public void Spring_covers_same_total_distance_as_constant_speed(double stiffness, double launch)
-    {
-        double expected = 4.0 * CrunchMath.C * 10.0;
-        double total = SpringTotal(4.0, 10.0, stiffness, launch, out bool nonNegative);
-        Assert.InRange(total / expected, 0.999999, 1.000001);
-        Assert.True(nonNegative);
-    }
-
-    [Theory]
-    [InlineData(7.5, 0.0, 0.15)]
-    [InlineData(8.0, 0.0, 0.3)]
-    [InlineData(5.0, 0.5, 0.2)]
-    public void Spring_with_end_speed_still_covers_same_total_distance(double stiffness, double launch, double endSpeed)
-    {
-        double expected = 4.0 * CrunchMath.C * 10.0;
-        double total = SpringTotal(4.0, 10.0, stiffness, launch, out bool nonNegative, endSpeed);
-        Assert.InRange(total / expected, 0.999999, 1.000001);
-        Assert.True(nonNegative);
-    }
-
-    [Fact]
-    public void Pure_spring_starts_at_rest()
-        => Assert.Equal(0.0, CrunchMath.SpringSpeedFactor(0.0, 10.0, 0.0), 9);
-
-    [Fact]
-    public void Launch_adds_nonzero_opening_speed()
-        => Assert.True(CrunchMath.SpringSpeedFactor(0.0, 8.0, 0.3) > 1.0);
-
-    [Fact]
-    public void Pure_spring_peaks_at_one_over_stiffness_and_then_decays()
-    {
-        double w = 10.0;
-        double peak = CrunchMath.SpringSpeedFactor(1.0 / w, w, 0.0);
-        Assert.True(peak > CrunchMath.SpringSpeedFactor(0.5 / w, w, 0.0));
-        Assert.True(peak > CrunchMath.SpringSpeedFactor(2.0 / w, w, 0.0));
-        Assert.InRange(peak, 3.5, 3.8);   // w / e
-    }
-
-    [Fact]
-    public void Spring_peak_factor_is_about_stiffness_over_e()
-        => Assert.InRange(CrunchMath.SpringPeakFactor(10.0, 0.0), 3.67, 3.69);
-
-    [Fact]
-    public void A_250c_peak_cap_limits_the_average_to_about_68c()
-        => Assert.InRange(250.0 / CrunchMath.SpringPeakFactor(10.0, 0.0), 67.8, 68.0);
-
-    [Fact]
-    public void End_speed_sets_the_resting_speed_at_the_end()
-        => Assert.InRange(CrunchMath.SpringSpeedFactor(1.0, 8.0, 0.0, 0.2), 0.2, 0.23);
-
-    [Fact]
-    public void Speed_never_drops_below_end_speed()
-    {
-        for (int i = 0; i <= 100; i++)
-            Assert.True(CrunchMath.SpringSpeedFactor(i / 100.0, 7.5, 0.0, 0.15) >= 0.15 - 1e-9);
-    }
-
-    [Fact]
-    public void Speed_factor_matches_per_tick_displacement()
-    {
-        // Average speed over a short tick should equal the instantaneous factor at its midpoint.
-        double w = 8.0, launch = 0.3, duration = 10.0, dt = 0.001, t = 3.0, endSpeed = 0.2;
-        double perTick = CrunchMath.SpringDisplacementPerTick(1.0, t, dt, duration, w, launch, endSpeed);
-        double factor = perTick / (CrunchMath.C * dt);
-        double expected = CrunchMath.SpringSpeedFactor((t + dt / 2) / duration, w, launch, endSpeed);
-        Assert.InRange(factor / expected, 0.999, 1.001);
-    }
-
-    [Fact]
-    public void Spring_displacement_is_zero_after_the_duration()
-        => Assert.Equal(0.0, CrunchMath.SpringDisplacementPerTick(4.0, 10.0, 0.02, 10.0, 8.0, 0.0, 0.15), 6);
-
     // ---- Trapezoid curve ----
 
     static double TrapezoidTotal(double averageC, double duration, double ramp, out bool allNonNegative)
@@ -165,10 +67,6 @@ public class CrunchMathTests
         => Assert.Equal(CrunchMath.TrapezoidPeakFactor(0.1), CrunchMath.TrapezoidSpeedFactor(0.5, 0.1), 9);
 
     [Fact]
-    public void A_250c_peak_cap_gives_a_225c_trapezoid_average()
-        => Assert.Equal(225.0, 250.0 / CrunchMath.TrapezoidPeakFactor(0.1), 6);
-
-    [Fact]
     public void Trapezoid_ramps_rise_and_fall_smoothly()
     {
         double previous = 0.0;
@@ -210,6 +108,116 @@ public class CrunchMathTests
     [Fact]
     public void Trapezoid_displacement_is_zero_after_the_duration()
         => Assert.Equal(0.0, CrunchMath.TrapezoidDisplacementPerTick(225.0, 10.0, 0.02, 10.0, 0.1), 6);
+
+    // ---- Ramps and the peak cap ----
+
+    [Fact]
+    public void A_ramp_is_the_ramp_seconds_share_of_the_leg_but_never_more_than_half()
+    {
+        Assert.Equal(0.05, CrunchMath.RampFraction(100.0, 5.0), 9);
+        Assert.Equal(0.5, CrunchMath.RampFraction(4.0, 5.0), 9);
+    }
+
+    [Fact]
+    public void A_very_long_leg_averages_almost_its_peak_speed()
+        => Assert.InRange(CrunchMath.MaxAverageForPeak(250.0, 3.8e16, 0.0, 5.0), 249.99, 250.0);
+
+    [Fact]
+    public void A_short_leg_averages_half_its_peak_speed()
+        => Assert.Equal(125.0, CrunchMath.MaxAverageForPeak(250.0, 2.5e10, 0.0, 5.0), 9);
+
+    [Theory]
+    [InlineData(2.5e10)]
+    [InlineData(3e11)]
+    [InlineData(1e12)]
+    [InlineData(1e13)]
+    [InlineData(3.8e16)]
+    public void The_peak_of_a_capped_leg_is_exactly_the_peak_cap(double meters)
+    {
+        double average = CrunchMath.MaxAverageForPeak(250.0, meters, 0.0, 5.0);
+        double duration = CrunchMath.SecondsForDistance(meters, average);
+        double ramp = CrunchMath.RampFraction(duration, 5.0);
+        Assert.InRange(average * CrunchMath.TrapezoidPeakFactor(ramp), 249.999, 250.001);
+    }
+
+    [Fact]
+    public void A_fixed_time_leg_uses_its_own_ramp_share()
+    {
+        Assert.Equal(237.5, CrunchMath.MaxAverageForPeak(250.0, 0.0, 100.0, 5.0), 9);
+        Assert.Equal(125.0, CrunchMath.MaxAverageForPeak(250.0, 0.0, 4.0, 5.0), 9);
+    }
+
+    // ---- Spool ----
+    // Reference numbers: 2.5c for the shortest spool (5 s), 250c for a full spool (1800 s), straight line in between.
+
+    const double MinC = 2.5;
+    const double MaxC = 250.0;
+    const double MinSpool = 5.0;
+    const double FullSpool = 1800.0;
+
+    static double Coef(double seconds) => CrunchMath.SpoolCoefficient(seconds, MinC, MaxC, MinSpool, FullSpool);
+
+    [Fact]
+    public void A_spool_no_longer_than_the_minimum_gives_the_slowest_speed()
+    {
+        Assert.Equal(2.5, Coef(0.0), 9);
+        Assert.Equal(2.5, Coef(5.0), 9);
+    }
+
+    [Fact]
+    public void A_full_spool_gives_the_top_speed_and_a_longer_one_does_not_add_to_it()
+    {
+        Assert.Equal(250.0, Coef(1800.0), 9);
+        Assert.Equal(250.0, Coef(5000.0), 9);
+    }
+
+    [Fact]
+    public void The_coefficient_rises_in_a_straight_line_with_the_spool()
+    {
+        Assert.InRange(Coef(300.0), 43.1, 43.3);                               // Five minutes: about 43c.
+        Assert.InRange(Coef(168.2), 24.9, 25.1);                              // 25c, the in-system speed, takes about 168 s.
+        Assert.Equal(0.5 * (MinC + MaxC), Coef(902.5), 6);                     // Halfway through the spool: halfway between the speeds.
+    }
+
+    [Fact]
+    public void A_longer_spool_never_gives_a_slower_speed()
+    {
+        double previous = 0.0;
+        for (int i = 0; i <= 400; i++)
+        {
+            double c = Coef(i * 5.0);
+            Assert.True(c >= previous - 1e-12);
+            previous = c;
+        }
+    }
+
+    [Fact]
+    public void A_spool_with_no_room_to_rise_steps_from_the_minimum_to_the_maximum()
+    {
+        Assert.Equal(2.5, CrunchMath.SpoolCoefficient(4.0, MinC, MaxC, 5.0, 5.0), 9);
+        Assert.Equal(250.0, CrunchMath.SpoolCoefficient(6.0, MinC, MaxC, 5.0, 5.0), 9);
+    }
+
+    [Fact]
+    public void A_leg_can_use_the_whole_spool_when_it_is_long_and_not_too_close()
+        => Assert.Equal(100.0, CrunchMath.LegSpeed(100.0, 250.0, 5.0, 1e13, 0.0, 0.1), 9);
+
+    [Fact]
+    public void A_short_leg_is_held_to_half_the_peak_speed()
+        => Assert.Equal(125.0, CrunchMath.LegSpeed(250.0, 250.0, 5.0, 2.5e10, 0.0, 0.1), 9);
+
+    [Fact]
+    public void A_target_closer_than_the_shortest_leg_lowers_the_speed()
+    {
+        // 1e9 m must take at least 0.1 s: 1e9 / (c x 0.1) = 33.4c.
+        double c = CrunchMath.LegSpeed(250.0, 250.0, 5.0, 1e9, 0.0, 0.1);
+        Assert.InRange(c, 33.3, 33.4);
+        Assert.InRange(CrunchMath.SecondsForDistance(1e9, c), 0.0999, 0.1001);
+    }
+
+    [Fact]
+    public void A_fixed_time_leg_ignores_the_shortest_leg_rule()
+        => Assert.Equal(237.5, CrunchMath.LegSpeed(250.0, 250.0, 5.0, 0.0, 100.0, 0.1), 9);
 
     // ---- Arrival ----
 
@@ -297,15 +305,6 @@ public class CrunchMathTests
     [Fact]
     public void Root_body_uses_a_multiple_of_its_radius()
         => Assert.Equal(3.0 * 261600000.0, CrunchMath.DropoutRadius(double.PositiveInfinity, 261600000.0, 0.0, 0.02, 100000.0, 3.0), 3);
-
-    [Fact]
-    public void Trapezoid_with_a_tiny_ramp_reaches_full_speed_almost_at_once()
-    {
-        // A 4 s ramp on a 3500 s crunch.
-        double ramp = 4.0 / 3500.0;
-        Assert.Equal(CrunchMath.TrapezoidPeakFactor(ramp), CrunchMath.TrapezoidSpeedFactor(5.0 / 3500.0, ramp), 9);
-        Assert.InRange(CrunchMath.TrapezoidPeakFactor(ramp), 1.0, 1.002);
-    }
 
     // ---- Attitude control and intercepts ----
 

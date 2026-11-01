@@ -6,54 +6,7 @@ namespace CrunchDrive.Core
     {
         public const double C = 299792458.0;
 
-        // ---- Spring curve (interplanetary) ----
-
-        // Fraction of the distance still to cover at progress p (0..1) for a critically damped
-        // spring with stiffness w and launch L (0 = starts at rest, 1 = instant-start exponential).
-        static double Remaining(double p, double w, double launch)
-            => (1.0 + w * (1.0 - launch) * p) * Math.Exp(-w * p);
-
-        static double ClampEnd(double endSpeed) => Math.Max(0.0, Math.Min(0.95, endSpeed));
-
-        // Critically damped spring displacement for one tick, blended with constant speed so the
-        // craft never slows below endSpeed (a fraction of the nominal speed). Total distance over
-        // the full duration equals constant speed (apparentSpeedC * C * duration).
-        public static double SpringDisplacementPerTick(double apparentSpeedC, double elapsed, double dt,
-                                                       double duration, double stiffness, double launch,
-                                                       double endSpeed = 0.0)
-        {
-            double r = ClampEnd(endSpeed);
-            double start = Math.Max(0.0, Math.Min(duration, elapsed));
-            double end = Math.Max(start, Math.Min(duration, elapsed + dt));
-            double norm = 1.0 - Remaining(1.0, stiffness, launch);
-            double spring = (Remaining(start / duration, stiffness, launch)
-                           - Remaining(end / duration, stiffness, launch)) / norm;
-            double linear = (end - start) / duration;
-            double covered = (1.0 - r) * spring + r * linear;
-            return apparentSpeedC * C * duration * covered;
-        }
-
-        // Instantaneous speed as a multiple of the nominal tier speed, at progress p (0..1).
-        public static double SpringSpeedFactor(double progress, double stiffness, double launch,
-                                               double endSpeed = 0.0)
-        {
-            double r = ClampEnd(endSpeed);
-            double norm = 1.0 - Remaining(1.0, stiffness, launch);
-            double spring = Math.Exp(-stiffness * progress) * stiffness
-                          * (launch + stiffness * (1.0 - launch) * progress) / norm;
-            return (1.0 - r) * spring + r;
-        }
-
-        // Highest speed factor (multiple of the average tier) the curve ever reaches.
-        public static double SpringPeakFactor(double stiffness, double launch, double endSpeed = 0.0)
-        {
-            double peak = 0.0;
-            for (int i = 0; i <= 2000; i++)
-                peak = Math.Max(peak, SpringSpeedFactor(i / 2000.0, stiffness, launch, endSpeed));
-            return peak;
-        }
-
-        // ---- Trapezoid curve (interstellar): ease up, hold peak speed, ease down ----
+        // ---- Speed curve (all crunches): ease up, cruise at peak speed, ease down ----
         // Each ramp lasts rampFraction of the duration and is smoothstep-shaped, so speed starts and ends
         // at zero without corners. With a peak speed of 1, the total distance is (1 - rampFraction).
 
@@ -73,12 +26,40 @@ namespace CrunchDrive.Core
             return (1.0 - r) - r * SmoothstepArea((1.0 - p) / r);
         }
 
-        // Peak speed as a multiple of the average tier speed.
+        // Share of a leg each ramp takes: rampSeconds, but never more than half the leg.
+        public static double RampFraction(double durationSeconds, double rampSeconds)
+        {
+            if (!(durationSeconds > 0.0)) return 0.5;
+            return Math.Max(1e-6, Math.Min(0.5, rampSeconds / durationSeconds));
+        }
+
+        // Peak speed as a multiple of the average speed.
         public static double TrapezoidPeakFactor(double rampFraction)
             => 1.0 / (1.0 - ClampRamp(rampFraction));
 
+        // Highest average speed (c) whose PEAK stays within maxPeakC. The peak is the average / (1 - ramp share), and the ramp
+        // share depends on how long the leg lasts, which depends on the speed, so this solves for both together.
+        // Give meters for a leg of known length, or fixedSeconds (> 0) for a leg of known time.
+        public static double MaxAverageForPeak(double maxPeakC, double meters, double fixedSeconds, double rampSeconds)
+        {
+            if (fixedSeconds > 0.0) return maxPeakC / TrapezoidPeakFactor(RampFraction(fixedSeconds, rampSeconds));
+            if (!(meters > 0.0)) return maxPeakC * 0.5;
+            double k = maxPeakC * rampSeconds * C / meters;   // Ramp share per unit of average speed, at the peak cap.
+            return k <= 1.0 ? maxPeakC / (1.0 + k) : maxPeakC * 0.5;
+        }
+
+        // The average speed (c) a leg can actually be flown at: what the spool paid for (requestedC), lowered to keep the PEAK
+        // within maxPeakC and, for a leg of known length, to keep the leg at least minLegSeconds long.
+        public static double LegSpeed(double requestedC, double maxPeakC, double rampSeconds, double meters,
+                                      double fixedSeconds, double minLegSeconds)
+        {
+            double c = Math.Min(requestedC, MaxAverageForPeak(maxPeakC, meters, fixedSeconds, rampSeconds));
+            if (!(fixedSeconds > 0.0) && minLegSeconds > 0.0) c = Math.Min(c, Math.Max(0.0, meters) / (C * minLegSeconds));
+            return c;
+        }
+
         // Trapezoid displacement for one tick. Total distance over the full duration equals
-        // constant speed (averageSpeedC * C * duration), the same as the spring.
+        // constant speed (averageSpeedC * C * duration).
         public static double TrapezoidDisplacementPerTick(double averageSpeedC, double elapsed, double dt,
                                                           double duration, double rampFraction)
         {
@@ -89,7 +70,7 @@ namespace CrunchDrive.Core
             return averageSpeedC * C * duration * covered;
         }
 
-        // Instantaneous speed as a multiple of the average tier speed, at progress p (0..1).
+        // Instantaneous speed as a multiple of the average speed, at progress p (0..1).
         public static double TrapezoidSpeedFactor(double progress, double rampFraction)
         {
             double r = ClampRamp(rampFraction);
@@ -99,6 +80,19 @@ namespace CrunchDrive.Core
             else if (p > 1.0 - r) unit = Smoothstep((1.0 - p) / r);
             else unit = 1.0;
             return unit / (1.0 - r);
+        }
+
+        // ---- Spool: how long the Casimir blades spin up sets how hard the field in front of the craft is compressed ----
+
+        // The average speed (c) a spool of spoolSeconds buys. Up to minSpoolSeconds it is minC; from there it rises
+        // in a straight line to maxC at fullSpoolSeconds, and it stays at maxC for any longer spool.
+        public static double SpoolCoefficient(double spoolSeconds, double minC, double maxC,
+                                              double minSpoolSeconds, double fullSpoolSeconds)
+        {
+            double span = fullSpoolSeconds - minSpoolSeconds;
+            if (!(span > 0.0)) return spoolSeconds >= fullSpoolSeconds ? maxC : minC;
+            double t = Math.Max(0.0, Math.Min(1.0, (spoolSeconds - minSpoolSeconds) / span));
+            return minC + (maxC - minC) * t;
         }
 
         // ---- Arrival ----

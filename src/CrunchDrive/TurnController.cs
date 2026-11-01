@@ -112,7 +112,7 @@ namespace CrunchDrive
             stageTime += dt;
             if (stageTime < T) return;
 
-            // The pulse is over: what changed, beyond the drift seen with no input?
+            // Remove baseline drift from the measured change.
             Vector3d change = omega - omegaAtStageStart;
             double span = stageTime;
             outPitch = outYaw = outRoll = 0f;

@@ -5,35 +5,74 @@ namespace CrunchDrive
     public static class CrunchTuning
     {
         // ---- Speed ----
-        public const double InterplanetaryTierC = 25.0;         // Average speed (c) for targets inside the system.
-        public const double InterstellarTierC = 250.0;          // Requested average (c) for far targets; clamped by the cap below.
-        public const double MaxSpeedC = 250.0;                  // Hard cap on the instantaneous PEAK speed (c).
-        public const double InterstellarEelooFactor = 3.0;      // Far = target beyond this x the distance from the root star to Eeloo.
-        public const double InterstellarRampSeconds = 4.0;      // Interstellar ramp-up and ramp-down, each this many seconds (at most half the crunch).
+        public const double MinSpeedC = 2.5;                    // Average speed (c) of the shortest spool. Keeps a crunch well above 1c.
+        public const double MaxSpeedC = 250.0;                  // Average speed (c) of a full spool, and the hard cap on the PEAK speed of any crunch. The average of a short leg is lower: its ramps take a larger share (a very short leg averages half the peak).
+        public const double RampSeconds = 7.5;                  // Ramp-up and ramp-down duration of every crunch, each capped at half the leg.
 
-        // ---- Spool and safety ----
-        public const double SpoolSeconds = 2.5;
+        // ---- Spool (the Casimir blades spin up for as long as the player likes; a longer spool compresses the field harder) ----
+        public const double SpoolEcPerSecond = 5000.0;          // Electric charge the spool draws each second. A part can override it with its own spoolEcPerSecond in the cfg. The craft's stored charge is only a buffer: when it can no longer supply this, the spool ends.
+        public const double MinSpoolSeconds = 5.0;              // Shortest spool: the crunch can be engaged after this long, and a spool shorter than this gives MinSpeedC.
+        public const double MaxSpoolSeconds = 1800.0;           // A spool this long (at the full draw) gives MaxSpeedC and ends by itself. The speed rises in a straight line from MinSpeedC at MinSpoolSeconds.
+        public const double SpoolDrySeconds = 1.0;              // The spool ends once the craft has been unable to supply the full draw for this long. 0 = the first short tick.
+        public const double GlowSpoolSeconds = 1.5;             // The part's emissive glow reaches full this many spool seconds after the spool starts.
+
+        // ---- Time warp ----
+        // Time warp is allowed during every spool, including the second one between the legs (if the setting is on).
+        public const double WarpMinLegSeconds = 300.0;          // During the crunch itself, on-rails time warp is allowed only for legs at least this long.
+        public const double WarpFinalSeconds = 5.0;             // Time warp is back to 1x this many seconds before a crunch leg ends.
+        public const double WarpSpoolFinalSeconds = 10.0;       // Time warp is back to 1x this many seconds before a spool ends.
+        public const double WarpStepSeconds = 2.5;              // Before that, each warp rate lasts at most about this many real seconds.
+
+        // ---- Sound cues ----
+        public const double CueHoldSeconds = 6.4;               // One-shot cues are held on this long, then reset so they can play again. Set it to the length of your longest one-shot clip.
+
+        public const double SpoolPitchRiseSeconds = 2.5;        // The spool loop's pitch rises from SpoolPitchStart to normal over this long after the spool starts.
+        public const double SpoolPitchFallSeconds = 1.5;        // When the spool ends without an engage (ready, or cancelled), the spool loop's pitch falls to SpoolPitchFloor over this long, then stops. After an engage it falls over TubeFadeInSeconds instead.
+        public const double SpoolPitchStart = 0.5;              // Pitch at the start of the spool.
+        public const double SpoolPitchFloor = 0.25;             // Pitch the spool loop falls to as the field forms, before it ends. Must match the low end of the cue's pitch curve in the part's config.
+
+        // ---- Glow ----
+        public const double GlowFadeSeconds = 15.0;             // The part's emissive glow fades back to grey over this long after a crunch (or a cancelled spool).
+
+        // ---- Tube of light (the blinding white tube around the craft while a crunch field is up) ----
+        public const double TubeRadiusFactor = 0.75;            // Tube radius = the ring's outer radius x this.
+        public const double TubeExtraLengthFraction = 0.0;      // Each end reaches this share of the craft's length beyond the craft (the tip of the tube); it fades out over that stretch.
+        public const int TubeSegments = 48;                     // Sides of the tube.
+        public const double TubeFadeInSeconds = 0.25;           // The tube grows from the ring to its full length, and fades in, over this long when the field forms. The craft waits this long before it starts to move, so the tube is at full length first.
+        public const double TubeFadeOutSeconds = 1.25;          // The tube shrinks back to the ring, and fades out, over this long when the field is down.
+        public const double TubeLightIntensity = 10.0;          // Point light at the ring, part of the same effect.
+        public const double TubeLightRangeFactor = 1.0;         // The light reaches this x the craft's length.
+        public const double TubeFlickerAmount = 0.25;           // How far the tube and its light waver while the field is up, 0..1 (0 = steady).
+        public const double TubeFlickerHz = 32.0;               // How fast they waver (roughly flickers per second).
+        public const double TubeShapeExponent = 2.0;            // Curve of the tube: widest at the ring, closing to a point at each end. 2 = an ellipse; higher = fuller near the ring, sharper at the tips. 1 is a straight cone, and lower counts as 1.
+        public const double TubeFitMaxFactor = 3.75;            // The tube is lengthened to cover wide parts far from the ring, but never past this x that part's distance from the ring. Parts wider than that stick out.
+        public const int TubeRings = 24;                        // Rings along each half of the tube, so the curve is smooth.
+        public const int TubeHaloShells = 5;                    // Soft layers around the tube that blur its edge; 0 = a hard edge.
+        public const double TubeHaloSpread = 1.125;             // The outermost soft layer is this much wider than the tube (x the ring's radius).
+        public const double TubeHaloStrength = 0.05;            // How bright the soft layers are, 0..1.
+
+        // ---- Safety ----
         public const double EngineGraceSeconds = 0.25;          // Engine thrust tolerated this long before the drive aborts.
 
         // ---- Targeting ----
         public const double TargetAlignToleranceDeg = 10.0;     // How far off the target the craft may be when a crunch starts.
-        public const double TurnAlignToleranceDeg = 2.0;        // Before the second leg: how far the tail may be off the target.
-        public const double TurnSettleRateDegPerSec = 0.5;      // Before the second leg: the craft must be turning slower than this...
-        public const double TurnSettleSeconds = 0.5;            // ...for this long, while aligned.
+        public const double TurnAlignToleranceDeg = 2.5;        // Before the second leg: how far the tail may be off the target.
+        public const double TurnSettleRateDegPerSec = 0.5;      // Before the second leg, remain below this rate while aligned.
+        public const double TurnSettleSeconds = 0.5;            // Required time below the rate threshold.
         public const double MinCrunchSeconds = 0.1;
         public const double VesselStopDistance = 75000.0;       // Stop this far short of a targeted vessel (m).
 
         // ---- Turn between the legs (attitude controller) ----
-        public const double TurnProbeSeconds = 0.2;             // Calibration: length of each test pulse (baseline, pitch, yaw, roll).
+        public const double TurnProbeSeconds = 0.125;           // Duration of each calibration stage.
         public const double TurnProbeInput = 0.25;              // Calibration: control input used for the test pulses (0..1).
         public const double TurnMinAuthority = 1e-4;            // Calibration: below this rad/s^2 per full input, an axis counts as having no torque.
-        public const double TurnMaxRateDegPerSec = 30.0;        // Never turn faster than this.
+        public const double TurnMaxRateDegPerSec = 60.0;        // Never turn faster than this.
         public const double TurnBrakingMargin = 0.5;            // Plan the braking with this fraction of the craft's angular acceleration.
-        public const double TurnRateGain = 1.0;                 // Close to the target the turning rate is this x the remaining angle (per second).
+        public const double TurnRateGain = 2.5;                 // Close to the target the turning rate is this x the remaining angle (per second).
         public const double TurnResponseSeconds = 0.5;          // The rate error is corrected over about this long.
 
         // ---- Dropout zones ----
-        public const double DropoutFraction = 0.0125;           // Fraction of each body's SOI.
+        public const double DropoutFraction = 0.00625;          // Fraction of each body's SOI.
         public const double MinDropoutAltitude = 100000.0;      // Zones reach at least this far above surface/atmosphere (m).
         public const double RootBodyDropoutRadii = 2.0;         // Multiplier for Kerbol's dropout radius.
 
@@ -41,26 +80,21 @@ namespace CrunchDrive
         public const double CaptureSpeedFraction = 0.9875;      // Capture assistance slows the craft to at most this x local escape speed.
         public const double CaptureSafeAltitude = 50000.0;      // Capture assistance keeps periapsis at least this far above the surface/atmosphere (m).
         public const double ArrivalSettleSeconds = 0.125;       // Longest wait for KSP to switch the reference body after a crunch.
-        public const double ArrivalDelaySeconds = 0.125;       // Wait this long after the switch before SAS is set and capture assistance starts.
-        public const double ArrivalAimTimeoutSeconds = 120.0;   // After capture assistance is done, give up waiting for the craft to settle retrograde after this long.
-        public const double InterceptApproachSpeed = 200.0;     // Intercept assistance closes on a targeted craft at this speed (m/s)...
-        public const double InterceptMinSeconds = 30.0;         // ...slowing down so the remaining distance always takes at least this long.
+        public const double ArrivalDelaySeconds = 0.125;        // Wait this long after the switch before SAS is set and capture assistance starts.
+        public const double ArrivalAimTimeoutSeconds = 30.0;    // After capture assistance is done, give up waiting for the craft to settle retrograde after this long.
+        public const double InterceptApproachSpeed = 200.0;     // Target closing speed for craft intercepts (m/s).
+        public const double InterceptMinSeconds = 30.0;         // Minimum duration of the final approach.
         public const double InterceptMaxDistance = 1000000.0;   // Farther than this from the target craft (m), the craft is captured by the body instead.
 
-        // ---- Interplanetary speed curve (critically damped spring) ----
-        public const double SpringStiffness = 10.0;
-        public const double SpringLaunch = 0.0;
-        public const double EndSpeedFraction = 0.0;
-
-        // ---- Player controls (move to the part later) ----
+        // ---- Player controls (live values; the primary crunch drive copies its craft settings here, and the debug window sets the last two) ----
         public static TravelMode Mode = TravelMode.FullDistance;    // Single-leg crunches only; a two-leg crunch plans its own distances.
-        public static double CrunchSeconds = 10.0;              // Duration in FixedDuration mode (single-leg crunches only).
-        public static bool Backwards = false;                   // Orientation of the FIRST leg. The second leg is always backwards.
-        public static bool TwoLegManeuver = true;               // Crunch to a planet, moon or craft in two legs: forward halfway, flip, backward the rest.
-        public static bool UseTurnController = true;            // Turn between the legs with the attitude controller instead of SAS.
-        public static bool AllowInterstellarWarp = true;        // Interstellar crunches may run under on-rails time warp. EXPERIMENTAL.
-        public static bool SasRetrograde = true;               // On arrival, set SAS to retrograde (only if SAS is on). The craft is never rotated by force.
-        public static bool CaptureAssist = true;                // On arrival, gradually slow/redirect the velocity until the craft is bound and clear of the surface (or on course to a targeted craft).
-        public static double CaptureRampSeconds = 4.0;          // Capture assistance spreads its velocity change over this long. 0 = one instant impulse.
+        public static double CrunchSeconds = 10.0;                  // Duration in FixedDuration mode (single-leg crunches only).
+        public static bool Backwards = false;                       // Orientation of the FIRST leg. The second leg is always backwards.
+        public static bool TwoLegManeuver = true;                   // Crunch to a planet, moon or craft in two legs: forward halfway, flip, backward the rest.
+        public static bool UseTurnController = true;                // Turn between the legs with the attitude controller instead of SAS.
+        public static bool AllowWarp = true;                        // The spool and long crunches may run under time warp. EXPERIMENTAL.
+        public static bool SasRetrograde = true;                    // On arrival, set SAS to retrograde (only if SAS is on). The craft is never rotated by force.
+        public static bool CaptureAssist = true;                    // On arrival, gradually slow/redirect the velocity until the craft is bound and clear of the surface (or on course to a targeted craft).
+        public static double CaptureRampSeconds = 2.75;             // Duration of the velocity change; 0 applies it instantly.
     }
 }

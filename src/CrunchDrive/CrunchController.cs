@@ -10,25 +10,68 @@ namespace CrunchDrive
     {
         public static string Status = CrunchText.StatusIdle;
         public static string TargetLine = CrunchText.NoTarget;   // Distance readout for the selected target.
-        public static double PreviewTierC = CrunchTuning.InterplanetaryTierC;   // Tier for the current target, for the window.
         static CrunchController instance;
 
         public static CrunchPhase CurrentPhase { get { return instance != null ? instance.phase : CrunchPhase.Idle; } }
         public static void PrimaryAction() { if (instance != null) instance.DoPrimary(); }
         public static void Cancel() { if (instance != null) instance.DoCancel(); }
 
+        public static double FieldHoldRemaining { get { return instance != null ? System.Math.Max(0.0, instance.fieldHold) : 0.0; } }   // Seconds left of the pause at the start of a leg, while the tube forms.
         public static bool IsTurning { get { return instance != null && instance.turning; } }
 
-        static double interstellarThreshold = -1.0;
-        static readonly double SpringPeak = CrunchMath.SpringPeakFactor(
-            CrunchTuning.SpringStiffness, CrunchTuning.SpringLaunch, CrunchTuning.EndSpeedFraction);
+        // Readouts for the part's right-click menu.
+        public static string TargetName = "";             // Selected target's name, or "" when none.
+        public static double TargetStopMeters = -1.0;     // Distance to that target's dropout zone edge or stopping point, or -1.
+        public static bool TargetIsBody;                  // The selected target is a planet or moon.
+
+        // True while Casimir blades are spinning up, including the second spool between the legs.
+        public static bool IsSpooling
+        {
+            get
+            {
+                if (instance == null) return false;
+                return instance.phase == CrunchPhase.Spooling || (instance.phase == CrunchPhase.Crunching && instance.turning && instance.turnSpooling);
+            }
+        }
+
+        public static double SpoolElapsed { get { return instance != null && IsSpooling ? instance.spoolElapsed : 0.0; } }          // Game seconds since the spool started.
+        public static double SpoolSecondsPaid { get { return instance != null && IsSpooling ? instance.spoolSeconds : 0.0; } }       // Spool seconds the drawn charge has paid for (what sets the coefficient).
+        public static double SpoolFraction { get { return instance != null && IsSpooling ? System.Math.Min(1.0, instance.spoolSeconds / CrunchTuning.GlowSpoolSeconds) : 0.0; } }   // 0..1, for the part's glow.
+        public static bool CanEngageFromSpool { get { return instance != null && instance.phase == CrunchPhase.Spooling && instance.spoolSeconds >= CrunchTuning.MinSpoolSeconds; } }   // The spool is long enough to engage now.
+
+        public static double LiveSpeedC { get { return instance != null && instance.phase == CrunchPhase.Crunching ? instance.activeTier * instance.CurveSpeedFactor() : 0.0; } }
+        public static double LegElapsed { get { return instance != null ? instance.elapsed : 0.0; } }
+        public static double LegDuration { get { return instance != null ? instance.activeDuration : 0.0; } }
+        public static double TraveledMeters { get { return instance != null ? instance.traveled : 0.0; } }
+        public static double ActiveTierC
+        {
+            get
+            {
+                if (instance == null) return CrunchTuning.MinSpeedC;
+                if (IsSpooling) return SpoolTierFor(instance.spoolSeconds);   // What the spool has paid for so far.
+                switch (instance.phase)
+                {
+                    case CrunchPhase.Crunching: return instance.activeTier;
+                    case CrunchPhase.Ready: return instance.spoolTier;
+                    default: return CrunchTuning.MinSpeedC;
+                }
+            }
+        }
+        public static bool ActiveBackwards { get { return instance != null && instance.crunchBackwards; } }
+        public static bool IsTwoLeg { get { return instance != null && instance.phase == CrunchPhase.Crunching && instance.twoLeg; } }
+        public static int CurrentLeg { get { return instance != null ? instance.leg : 0; } }
+        public static double OffAxisDeg;                  // Angle between the craft's crunch axis and the crunch heading; set every tick while a field is up.
+
+        // Dropout zone readouts for the part's right-click menu.
+        public static string DropoutBodyName = "";        // Body whose dropout zone edge is nearest, or "" when unknown.
+        public static double DropoutEdgeMeters;           // Distance to that edge; negative while inside the zone.
+        public static double DropoutAltitudeMeters;       // Height of the current reference body's dropout zone edge above its surface.
 
         // Everything a crunch needs, worked out (and validated) from the vessel's current state.
         struct CrunchPlan
         {
             public bool backwards;
             public bool locked;
-            public bool interstellar;
             public bool twoLeg;
             public ITargetable target;
             public string targetName;
@@ -36,7 +79,10 @@ namespace CrunchDrive
             public Vector3d heading;
             public double tier;
             public double duration;
-            public double ramp;
+            public double ramp;          // Share of the leg each speed ramp takes.
+            public bool warpOk;          // The leg is long enough for on-rails time warp.
+            public bool closedLoop;      // The leg's length is tied to the distance to the target's stopping point.
+            public double endFraction;   // Share of the starting stop distance still left when the leg ends (0 = all the way).
         }
 
         CrunchPhase phase = CrunchPhase.Idle;
@@ -62,8 +108,13 @@ namespace CrunchDrive
         double turnSettled;         // Seconds the craft has been aligned and nearly still.
         readonly TurnController turnCtl = new TurnController();
         bool turnFallback;          // The attitude controller couldn't steer this craft; SAS does the turn instead.
-        bool spoolInterstellar;     // The planned crunch is interstellar (decides whether warp is allowed while Ready).
         double lastUt = -1.0;       // Universal time at the last crunch tick, for crunches under time warp.
+        bool turnSpooling;          // The second leg's Casimir blades are spinning up.
+        double fieldHold;           // Seconds the craft still waits at the start of a leg while the tube of light grows.
+        bool legClosedLoop;         // This leg's length follows the (moving) distance to the stopping point.
+        double legEndFraction;      // Share of the starting stop distance still left when this leg ends.
+        double legEndStop = -1.0;   // Stop distance at which this leg should end (set on its first tick), or -1.
+        double plannedDone;         // Distance the unadjusted curve has covered so far this leg.
 
         Vessel arrivalVessel;       // Set after an arrival, until the arrival assistance has finished.
         double arrivalWait;         // Seconds spent waiting for KSP to switch the reference body.
@@ -84,12 +135,25 @@ namespace CrunchDrive
         double capRate;             // Largest velocity change per second the ramp applies (m/s per s).
         double capElapsed;          // Seconds since capture assistance started.
 
-        double spoolElapsed;        // Seconds spent spooling.
+        // Spool (charging the Casimir blades). Used by the first spool and by the second one between the legs.
+        double spoolElapsed;        // Game seconds since the spool started.
+        double spoolSeconds;        // Spool seconds paid for so far: the charge drawn divided by the draw rate. This sets the coefficient.
+        double spoolTarget;         // Spool seconds at which the spool ends by itself.
+        double spoolCharge;         // Charge (EC) drawn so far.
+        double spoolRate;           // Charge (EC) per second the spool draws.
+        double spoolTier;           // Average speed (c) the finished spool has paid for.
+        double firstSpoolSeconds;   // Length of the first spool, which the second spool repeats.
+        bool spoolFinished;         // The second spool is over (it ran its length, or the craft ran out of charge).
+        double spoolDryTime;        // Game seconds the craft has been unable to supply the full draw.
+        double spoolLastUt = -1.0;  // Universal time at the last spool tick, for spools under time warp.
+
+        static int ecId = -2;       // ElectricCharge's resource id; -2 = not looked up yet, -1 = not found.
+
         double engineThrustTime;    // Seconds of continuous engine thrust seen while the drive is active.
         double activeTier;          // Average speed (c) locked in when the crunch engaged.
-        bool activeInterstellar;    // True when this crunch uses the trapezoid curve instead of the spring.
+        bool activeWarpOk;          // This leg is long enough for on-rails time warp.
         double activeDuration;      // Length of the current crunch leg, in seconds.
-        double activeRamp;          // Interstellar ramp-up and ramp-down, each as a fraction of the leg.
+        double activeRamp;          // Ramp-up and ramp-down of the current leg, each as a fraction of the leg.
         double elapsed;             // Game seconds since the current leg began.
         double traveled;            // Total commanded displacement, in meters.
         double logTimer;
@@ -103,95 +167,159 @@ namespace CrunchDrive
 
         static Vec3d V(Vector3d v) { return new Vec3d(v.x, v.y, v.z); }
 
-        // Far targets are those beyond a multiple of the distance from the root star to Eeloo (the outermost
-        // stock planet). Falls back to the farthest planet if there is no Eeloo (a different planet pack).
-        static double InterstellarThreshold()
-        {
-            if (interstellarThreshold <= 0.0)
-            {
-                CelestialBody sun = Planetarium.fetch.Sun;
-                double reach = 0.0;
-                string from = "Eeloo";
-                foreach (CelestialBody b in FlightGlobals.Bodies)
-                    if (b.name == "Eeloo" && b.orbit != null && b.referenceBody == sun) reach = b.orbit.semiMajorAxis;
+        // ---- Power and spool ----
 
-                if (reach <= 0.0)
-                {
-                    from = "the outermost planet";
-                    foreach (CelestialBody b in FlightGlobals.Bodies)
-                        if (b != sun && !b.isStar && b.orbit != null && b.referenceBody == sun)
-                            reach = System.Math.Max(reach, b.orbit.semiMajorAxis);
-                }
-                if (reach <= 0.0) return double.MaxValue;   // Not ready yet; treat everything as interplanetary.
-
-                interstellarThreshold = reach * CrunchTuning.InterstellarEelooFactor;
-                Debug.Log(string.Format("[CrunchDrive] Interstellar threshold: targets beyond {0:E3} m ({1:G3} x the distance to {2}).",
-                    interstellarThreshold, CrunchTuning.InterstellarEelooFactor, from));
-            }
-            return interstellarThreshold;
-        }
-
-        static bool IsInterstellar(double targetDistance)
-        {
-            return targetDistance > InterstellarThreshold();
-        }
-
-        // Average speed (c) for a crunch toward a target this far away (0 = no target).
-        // Clamped so the curve's PEAK never exceeds MaxSpeedC.
-        public static double TierFor(double targetDistance)
-        {
-            if (IsInterstellar(targetDistance))
-                return System.Math.Min(CrunchTuning.InterstellarTierC, CrunchTuning.MaxSpeedC);   // Rough figure for the window; legs are timed by LegTiming.
-            return System.Math.Min(CrunchTuning.InterplanetaryTierC, CrunchTuning.MaxSpeedC / SpringPeak);
-        }
-
-        // Interstellar ramps last a fixed number of seconds (a fraction of the leg), not a share of its length.
         static double RampFor(double duration)
         {
-            if (!(duration > 0.0)) return 0.5;
-            return System.Math.Max(1e-6, System.Math.Min(0.5, CrunchTuning.InterstellarRampSeconds / duration));
+            return CrunchMath.RampFraction(duration, CrunchTuning.RampSeconds);
         }
 
-        // Average speed (c) for an interstellar leg with this ramp, so the PEAK stays under MaxSpeedC (0.1% margin).
-        static double InterstellarTier(double ramp)
+        static int EcId()
         {
-            return System.Math.Min(CrunchTuning.InterstellarTierC, CrunchTuning.MaxSpeedC / CrunchMath.TrapezoidPeakFactor(ramp) * 0.999);
+            if (ecId == -2)
+            {
+                PartResourceDefinition def = PartResourceLibrary.Instance.GetDefinition("ElectricCharge");
+                ecId = def != null ? def.id : -1;
+            }
+            return ecId;
         }
 
-        // Average speed, length and ramp of one leg that has to cover `travel` meters.
-        static void LegTiming(bool interstellar, double travel, out double tier, out double duration, out double ramp)
+        // Electric charge stored anywhere on the craft.
+        static double ReadStored(Vessel v)
         {
-            if (!interstellar)
-            {
-                tier = System.Math.Min(CrunchTuning.InterplanetaryTierC, CrunchTuning.MaxSpeedC / SpringPeak);
-                duration = CrunchMath.SecondsForDistance(travel, tier);
-                ramp = 0.0;
-                return;
-            }
+            int id = EcId();
+            if (id < 0) return 0.0;
+            double amount, max;
+            v.GetConnectedResourceTotals(id, out amount, out max);
+            return amount;
+        }
 
-            // The ramp depends on the length and the length on the speed (which the ramp caps): settle it by iterating.
-            tier = System.Math.Min(CrunchTuning.InterstellarTierC, CrunchTuning.MaxSpeedC);
-            duration = CrunchMath.SecondsForDistance(travel, tier);
-            ramp = RampFor(duration);
-            for (int i = 0; i < 4; i++)
+        // Takes charge from the whole craft, through the drive part. Returns what was actually obtained.
+        static double DrawEnergy(Vessel v, double amount)
+        {
+            int id = EcId();
+            ModuleCrunchDrive drive = ModuleCrunchDrive.PrimaryFor(v);
+            if (id < 0 || drive == null || amount <= 0.0) return 0.0;
+            return System.Math.Max(0.0, drive.part.RequestResource(id, amount, ResourceFlowMode.ALL_VESSEL));
+        }
+
+        // Charge per second the craft's spool draws: the primary drive's own value.
+        static double DrawRateFor(Vessel v)
+        {
+            ModuleCrunchDrive drive = ModuleCrunchDrive.PrimaryFor(v);
+            return drive != null ? drive.SpoolEcPerSecond : CrunchTuning.SpoolEcPerSecond;
+        }
+
+        // The average speed (c) a spool of this many (paid-for) seconds buys.
+        static double SpoolTierFor(double spoolSeconds)
+        {
+            return CrunchMath.SpoolCoefficient(spoolSeconds, CrunchTuning.MinSpeedC, CrunchTuning.MaxSpeedC,
+                                               CrunchTuning.MinSpoolSeconds, CrunchTuning.MaxSpoolSeconds);
+        }
+
+        // How the first leg is sized: a length in meters or, in Fixed-time mode, a time.
+        static void LegSizing(bool locked, ITargetable target, double targetDistance,
+                              out bool twoLegPlan, out double meters, out double fixedSeconds)
+        {
+            twoLegPlan = locked && CrunchTuning.TwoLegManeuver;
+            meters = 0.0;
+            fixedSeconds = 0.0;
+
+            if (twoLegPlan)
             {
-                tier = InterstellarTier(ramp);
-                duration = CrunchMath.SecondsForDistance(travel, tier);
-                ramp = RampFor(duration);
+                meters = StopDistance(target, targetDistance) * 0.5;
+            }
+            else if (CrunchTuning.Mode != TravelMode.FixedDuration)
+            {
+                if (!locked) return;   // Needs a target; the caller refuses.
+                meters = StopDistance(target, targetDistance);
+                if (CrunchTuning.Mode == TravelMode.HalfDistance) meters *= 0.5;
+            }
+            else
+            {
+                fixedSeconds = CrunchTuning.CrunchSeconds;
             }
         }
 
-        // Average speed and ramp of a leg whose length is fixed (Fixed-time mode, no target).
-        static void FixedTiming(bool interstellar, double duration, out double tier, out double ramp)
+        // Starts a spool that ends by itself after targetSeconds of paid-for spooling (the player may engage sooner).
+        void BeginSpool(Vessel v, double targetSeconds)
         {
-            if (!interstellar)
+            spoolTarget = targetSeconds;
+            spoolSeconds = 0.0;
+            spoolCharge = 0.0;
+            spoolElapsed = 0.0;
+            spoolFinished = false;
+            spoolDryTime = 0.0;
+            spoolLastUt = -1.0;
+            spoolRate = DrawRateFor(v);
+        }
+
+        // True when the craft has been unable to supply the spool's full draw for long enough that the charge has run out.
+        bool SpoolRanDry()
+        {
+            return spoolDryTime > CrunchTuning.SpoolDrySeconds;
+        }
+
+        // Game seconds until the spool ends by itself, if the craft keeps supplying it (for stepping time warp down).
+        double SpoolSecondsLeft()
+        {
+            return System.Math.Max(0.0, spoolTarget - spoolSeconds);
+        }
+
+        // One tick of a spool: draws charge, and returns true once the spool has run its full length. The charge the craft can
+        // supply is what limits it: the spool draws spoolRate EC every game second, and a tick that gets less than that counts
+        // towards spoolDryTime. The caller ends the spool when SpoolRanDry() says so, and the speed stays where it got to.
+        // Under time warp a tick is many game seconds, and the draw scales with them.
+        bool StepSpool(Vessel v, double dt)
+        {
+            double ut = Planetarium.GetUniversalTime();
+            double gameDt = dt;
+            if (TimeWarp.CurrentRate > 1.0f && spoolLastUt >= 0.0)
+                gameDt = System.Math.Max(dt, ut - spoolLastUt);
+            spoolLastUt = ut;
+
+            spoolElapsed += gameDt;
+            double want = System.Math.Min(gameDt, System.Math.Max(0.0, spoolTarget - spoolSeconds)) * spoolRate;
+            if (want > 0.0)
             {
-                tier = System.Math.Min(CrunchTuning.InterplanetaryTierC, CrunchTuning.MaxSpeedC / SpringPeak);
-                ramp = 0.0;
-                return;
+                double got = DrawEnergy(v, want);
+                spoolCharge += got;
+                spoolSeconds += got / spoolRate;
+                if (got < want * 0.999) spoolDryTime += gameDt * (1.0 - got / want);   // Only the part of the tick that went unpaid counts as dry.
+                else spoolDryTime = 0.0;
             }
-            ramp = RampFor(duration);
-            tier = InterstellarTier(ramp);
+            return spoolSeconds >= spoolTarget * 0.9999;
+        }
+
+        // The first spool is over: it ran its full length, the craft ran out of charge, or the player engaged.
+        // The coefficient stays at whatever the spool reached.
+        void FinishSpool(Vessel v, bool full, bool dry)
+        {
+            spoolTier = SpoolTierFor(spoolSeconds);
+            firstSpoolSeconds = spoolSeconds;
+            phase = CrunchPhase.Ready;
+            Status = CrunchText.StatusReady;
+            ReleaseWarp();   // The player is back at normal speed once the drive is ready.
+            Debug.Log(string.Format("[CrunchDrive] Spool done in {0:F1} s ({1}): {2:N0} EC drawn, {3:F1} spool seconds paid for, coefficient {4:G4}c.",
+                spoolElapsed, full ? "full spool" : (dry ? "out of charge" : "engaged"), spoolCharge, spoolSeconds, spoolTier));
+            if (full) Post(CrunchText.MsgSpoolFull(spoolTier));
+            else if (dry) Post(CrunchText.MsgSpoolDry(spoolTier));
+        }
+
+        // Steps the second spool (between the legs). Returns true once it is over: it ran as long as the first one, or the craft
+        // ran out of charge, in which case the second leg is flown at whatever speed it reached.
+        bool StepTurnSpool(Vessel v, double dt)
+        {
+            bool full = StepSpool(v, dt);
+            bool dry = !full && SpoolRanDry();
+            if (!full && !dry) return false;
+
+            spoolFinished = true;
+            spoolTier = SpoolTierFor(spoolSeconds);
+            Debug.Log(string.Format("[CrunchDrive] Second spool done in {0:F1} s ({1}): {2:N0} EC drawn, {3:F1} spool seconds paid for, coefficient {4:G4}c.",
+                spoolElapsed, full ? "full spool" : "out of charge", spoolCharge, spoolSeconds, spoolTier));
+            if (dry) Post(CrunchText.MsgSpoolDry(spoolTier));
+            return true;
         }
 
         // Stars (the root star, and others like Anubis) get a multiple of their radius, never a share of their
@@ -213,6 +341,12 @@ namespace CrunchDrive
             CelestialBody b = t as CelestialBody;
             double standoff = b != null ? DropoutRadius(b) : CrunchTuning.VesselStopDistance;
             return System.Math.Max(0.0, distanceToCenter - standoff);
+        }
+
+        // A crunch needs at least one crunch drive part on the craft.
+        static bool HasDrive(Vessel v)
+        {
+            return ModuleCrunchDrive.HasDrive(v);   // Cached; this runs every physics tick while a crunch is active.
         }
 
         // True when any operational engine is producing thrust.
@@ -239,6 +373,23 @@ namespace CrunchDrive
             FlightInputHandler.state.Z = 0f;
         }
 
+        // Freezes the craft's attitude while the crunch field is up: no steering input, no spin.
+        static void LockOutRotation(Vessel v)
+        {
+            v.ctrlState.pitch = 0f;
+            v.ctrlState.yaw = 0f;
+            v.ctrlState.roll = 0f;
+
+            FlightInputHandler.state.pitch = 0f;
+            FlightInputHandler.state.yaw = 0f;
+            FlightInputHandler.state.roll = 0f;
+
+            if (v.packed) return;   // Packed vessels have no rigidbodies and can't spin anyway.
+            foreach (Part p in v.parts)
+                if (p != null && p.rb != null)
+                    p.rb.angularVelocity = Vector3.zero;
+        }
+
         // World position of a target. Planets use their double-precision position.
         static bool TryGetTargetPosition(ITargetable t, out Vector3d pos)
         {
@@ -257,6 +408,45 @@ namespace CrunchDrive
             return true;
         }
 
+        // ---- Positions at an exact universal time ----
+        // Under on-rails warp the game moves planets only once per frame, so b.position can be thousands of game
+        // seconds behind the time the craft's orbit is evaluated at. At interstellar speeds that error is large
+        // enough to miss a moon's sphere of influence. While the vessel is packed, everything is therefore worked
+        // out from the orbits at the same instant. All of these share one frame, so only differences between them are used.
+
+        static Vector3d TrueBodyPos(CelestialBody b, double ut)
+        {
+            if (b == null || b.orbit == null || b.referenceBody == null || b.referenceBody == b) return new Vector3d(0.0, 0.0, 0.0);
+            return TrueBodyPos(b.referenceBody, ut) + b.orbit.getRelativePositionAtUT(ut).xzy;
+        }
+
+        static Vector3d TrueOrbitPos(Orbit o, double ut)
+        {
+            return TrueBodyPos(o.referenceBody, ut) + o.getRelativePositionAtUT(ut).xzy;
+        }
+
+        static Vector3d BodyPos(CelestialBody b, bool exact, double ut)
+        {
+            return exact ? TrueBodyPos(b, ut) : b.position;
+        }
+
+        static Vector3d ShipPos(Vessel v, bool exact, double ut)
+        {
+            return exact ? TrueOrbitPos(v.orbit, ut) : v.GetWorldPos3D();
+        }
+
+        static bool TargetPos(ITargetable t, bool exact, double ut, out Vector3d pos)
+        {
+            if (exact)
+            {
+                CelestialBody body = t as CelestialBody;
+                if (body != null) { pos = TrueBodyPos(body, ut); return true; }
+                Vessel tv = t as Vessel;
+                if (tv != null && tv.orbit != null) { pos = TrueOrbitPos(tv.orbit, ut); return true; }
+            }
+            return TryGetTargetPosition(t, out pos);
+        }
+
         static double AngleDeg(Vector3d a, Vector3d b)
         {
             double c = Vector3d.Dot(a.normalized, b.normalized);
@@ -267,14 +457,31 @@ namespace CrunchDrive
         {
             // Keep the engines locked out for as long as the drive is spooling, ready, or crunching.
             if (phase != CrunchPhase.Idle && crunchVessel != null && FlightGlobals.ActiveVessel == crunchVessel)
+            {
                 LockOutEngines(crunchVessel);
+                if (phase == CrunchPhase.Crunching && !turning) LockOutRotation(crunchVessel);
+            }
 
             // Keep the target readout current whenever a target is selected, crunching or not.
             TargetLine = CrunchText.NoTarget;
-            PreviewTierC = TierFor(0.0);
+            TargetName = "";
+            TargetStopMeters = -1.0;
+            TargetIsBody = false;
+            DropoutBodyName = "";
+            if (phase != CrunchPhase.Crunching) OffAxisDeg = 0.0;
 
             Vessel v = FlightGlobals.ActiveVessel;
             if (v == null) return;
+
+            // Nearest dropout zone edge (negative while inside a zone), and the dropout altitude of the current body.
+            Vector3d shipPos = v.GetWorldPos3D();
+            double bestEdge = double.PositiveInfinity;
+            foreach (CelestialBody b in FlightGlobals.Bodies)
+            {
+                double edge = (shipPos - b.position).magnitude - DropoutRadius(b);
+                if (edge < bestEdge) { bestEdge = edge; DropoutBodyName = b.name; DropoutEdgeMeters = edge; }
+            }
+            DropoutAltitudeMeters = DropoutRadius(v.mainBody) - v.mainBody.Radius;
 
             ITargetable t = v.targetObject;
             Vector3d tp;
@@ -282,10 +489,12 @@ namespace CrunchDrive
 
             double distance = (tp - v.GetWorldPos3D()).magnitude;
             double stop = StopDistance(t, distance);
-            PreviewTierC = TierFor(distance);
             string name = t.GetDisplayName().Replace("^N", "");
 
             TargetLine = CrunchText.StatusTargetIdle(name, stop, t is CelestialBody);
+            TargetName = name;
+            TargetStopMeters = stop;
+            TargetIsBody = t is CelestialBody;
 
             // While crunching toward the target, the status readout already shows it; don't show it twice.
             if (phase == CrunchPhase.Crunching && !turning && targetLocked) TargetLine = "";
@@ -309,26 +518,36 @@ namespace CrunchDrive
             switch (phase)
             {
                 case CrunchPhase.Idle: StartSpool(v); break;
+                case CrunchPhase.Spooling:   // Engage as soon as the spool is long enough: the speed is whatever it has reached.
+                    if (spoolSeconds >= CrunchTuning.MinSpoolSeconds)
+                    {
+                        FinishSpool(v, false, false);
+                        TryEngage(v);
+                    }
+                    break;
                 case CrunchPhase.Ready: TryEngage(v); break;
-                case CrunchPhase.Crunching: End(CrunchText.StopByWindow); break;   // Also cancels the turn between legs.
+                case CrunchPhase.Crunching: End(CrunchText.StopByPlayer); break;   // Also cancels the turn between legs.
             }
         }
 
         void DoCancel()
         {
             if (phase == CrunchPhase.Spooling || phase == CrunchPhase.Ready)
-                End(CrunchText.StopByWindow);
+                End(CrunchText.StopByPlayer);
         }
 
         // ---- Checks ----
 
         // Works out whether a crunch can happen right now and builds its plan. On failure it posts the
-        // reason and returns false. Used when spooling starts, so a doomed crunch never spins up, and
-        // again at engage, because the ship can turn or drift during the spool.
-        bool TryPlan(Vessel v, bool announce, out CrunchPlan plan)
+        // reason and returns false. Used when spooling starts (engaging = false), so a doomed crunch never spins up
+        // and the speed is chosen from the stored charge, and again at engage (engaging = true), because the ship can
+        // turn or drift during the spool. At engage the speed paid for during the spool is kept, and only lowered
+        // if the leg has grown longer than that charge covers.
+        bool TryPlan(Vessel v, bool announce, bool engaging, out CrunchPlan plan)
         {
             plan = new CrunchPlan();
 
+            if (!HasDrive(v)) { Refuse(CrunchText.RefuseNoDrive); return false; }
             if (EnginesThrusting(v)) { Refuse(CrunchText.RefuseEnginesActive); return false; }
             if (FlightGlobals.VesselsLoaded.Count > 1) { Refuse(CrunchText.RefuseOtherVessels); return false; }
             if (v.mainBody.atmosphere && v.altitude < v.mainBody.atmosphereDepth)
@@ -375,58 +594,40 @@ namespace CrunchDrive
                 }
             }
 
-            // Speed and curve: interplanetary or interstellar by target distance, capped so the peak stays legal.
-            double planDistance = locked ? targetDistance : 0.0;
-            bool interstellar = IsInterstellar(planDistance);
-
-            // Time warp is only allowed for an interstellar crunch that is being engaged (not while spooling).
-            if (TimeWarp.CurrentRate > 1.0f &&
-                !(interstellar && CrunchTuning.AllowInterstellarWarp && phase == CrunchPhase.Ready))
-            { Refuse(CrunchText.RefuseTimeWarp); return false; }
-
             // Any target (planet, moon or craft) gets the two-leg maneuver: the first leg covers half the distance
             // to the stopping point. The second leg is planned when it starts, from the real distance left.
-            bool twoLegPlan = locked && CrunchTuning.TwoLegManeuver;
+            bool twoLegPlan;
+            double meters, fixedSeconds;
+            LegSizing(locked, target, targetDistance, out twoLegPlan, out meters, out fixedSeconds);
+            bool timed = fixedSeconds > 0.0;
+            if (!timed && !locked) { Refuse(CrunchText.RefuseNoTarget); return false; }
 
-            // Crunch length: fixed, or worked out from the target distance at the same average speed.
-            double tier, ramp;
-            double duration = CrunchTuning.CrunchSeconds;
-            if (twoLegPlan)
-            {
-                double leg1 = StopDistance(target, targetDistance) * 0.5;
-                LegTiming(interstellar, leg1, out tier, out duration, out ramp);
-                if (duration < CrunchTuning.MinCrunchSeconds) { Refuse(CrunchText.RefuseTooClose); return false; }
+            // Speed: what the spool has paid for, lowered to keep the peak within MaxSpeedC and the leg at least MinCrunchSeconds long.
+            // Before the spool starts only the leg's geometry is checked, with the slowest speed.
+            double tier = CrunchMath.LegSpeed(engaging ? spoolTier : CrunchTuning.MinSpeedC, CrunchTuning.MaxSpeedC,
+                                              CrunchTuning.RampSeconds, meters, fixedSeconds, CrunchTuning.MinCrunchSeconds);
+            if (tier < CrunchTuning.MinSpeedC * 0.999) { Refuse(CrunchText.RefuseTooClose); return false; }
 
-                if (announce)
-                    Debug.Log(string.Format("[CrunchDrive] Two-leg maneuver: first leg {0:E3} m in {1:F2} s", leg1, duration));
-            }
-            else if (CrunchTuning.Mode != TravelMode.FixedDuration)
-            {
-                if (!locked) { Refuse(CrunchText.RefuseNoTarget); return false; }
+            double duration = fixedSeconds;
+            if (!timed) duration = CrunchMath.SecondsForDistance(meters, tier);
 
-                double travel = StopDistance(target, targetDistance);
-                if (CrunchTuning.Mode == TravelMode.HalfDistance) travel *= 0.5;
-                LegTiming(interstellar, travel, out tier, out duration, out ramp);
-                if (duration < CrunchTuning.MinCrunchSeconds) { Refuse(CrunchText.RefuseTooClose); return false; }
+            double ramp = RampFor(duration);
 
-                if (announce)
-                    Debug.Log(string.Format("[CrunchDrive] Travel mode {0}: {1:E3} m in {2:F2} s",
-                        CrunchTuning.Mode, travel, duration));
-            }
-            else
-            {
-                FixedTiming(interstellar, duration, out tier, out ramp);
-            }
+            // On-rails time warp is only allowed for a long leg that is being engaged (not before the spool starts).
+            bool warpOk = duration >= CrunchTuning.WarpMinLegSeconds;
+            if (TimeWarp.CurrentRate > 1.0f &&
+                !(warpOk && CrunchTuning.AllowWarp && phase == CrunchPhase.Ready))
+            { Refuse(CrunchText.RefuseTimeWarp); return false; }
 
             if (announce)
-                Debug.Log(string.Format("[CrunchDrive] {0} curve, compression coefficient {1:G4}c (peak {2:G4}c){3}",
-                    interstellar ? "Trapezoid" : "Spring", tier,
-                    tier * (interstellar ? CrunchMath.TrapezoidPeakFactor(ramp) : SpringPeak),
-                    interstellar ? string.Format(", ramps {0:F1} s", ramp * duration) : ""));
+                Debug.Log(string.Format("[CrunchDrive] {0}: {1}{2}, compression coefficient {3:G4}c (peak {4:G4}c), leg {5:F2} s, ramps {7:F2} s{6}",
+                    twoLegPlan ? "Two-leg maneuver" : "Travel mode " + CrunchTuning.Mode,
+                    timed ? "fixed time" : string.Format("{0:E3} m", meters),
+                    twoLegPlan ? " for the first leg" : "",
+                    tier, tier * CrunchMath.TrapezoidPeakFactor(ramp), duration, warpOk ? ", warp allowed" : "", ramp * duration));
 
             plan.backwards = backwards;
             plan.locked = locked;
-            plan.interstellar = interstellar;
             plan.twoLeg = twoLegPlan;
             plan.target = locked ? target : null;
             plan.targetName = targetName;
@@ -435,6 +636,9 @@ namespace CrunchDrive
             plan.tier = tier;
             plan.duration = duration;
             plan.ramp = ramp;
+            plan.warpOk = warpOk;
+            plan.closedLoop = locked && (twoLegPlan || CrunchTuning.Mode != TravelMode.FixedDuration);
+            plan.endFraction = (twoLegPlan || (CrunchTuning.Mode == TravelMode.HalfDistance)) ? 0.5 : 0.0;
             return true;
         }
 
@@ -442,31 +646,45 @@ namespace CrunchDrive
         {
             // Nothing spins up, and the engines stay free, unless a crunch would actually be allowed.
             CrunchPlan plan;
-            if (!TryPlan(v, false, out plan)) return;
+            if (!TryPlan(v, false, false, out plan)) return;
+
+            // The craft's stored charge is only a buffer. A spool can start with any amount, because the craft's own generators
+            // may out-produce what is stored (a reactor can make more per second than it holds). If the power does not come,
+            // the spool stops by itself a moment later.
+            double stored = ReadStored(v);
 
             if (arrivalVessel != null) AbortArrival("a new spool started.");   // A new spool cancels any arrival assistance still waiting.
             capturing = false;
             turning = false;
-            spoolInterstellar = plan.interstellar;
+            turnSpooling = false;
+            spoolTier = CrunchTuning.MinSpeedC;
             crunchVessel = v;
-            spoolElapsed = 0;
             engineThrustTime = 0;
+            BeginSpool(v, CrunchTuning.MaxSpoolSeconds);
             phase = CrunchPhase.Spooling;
             LockOutEngines(v);
-            Status = CrunchText.StatusSpooling(0, CrunchTuning.SpoolSeconds);
-            Post(CrunchText.MsgSpoolStart(CrunchTuning.SpoolSeconds));
+            Status = CrunchText.StatusSpooling(0, CrunchTuning.MinSpeedC, spoolRate, false);
+
+            Debug.Log(string.Format("[CrunchDrive] Spool: drawing {0:N0} EC/s from {1:N0} EC stored; the coefficient rises from {2:G3}c ({3:F0} s) to {4:G3}c ({5:F0} s).",
+                spoolRate, stored, CrunchTuning.MinSpeedC, CrunchTuning.MinSpoolSeconds, CrunchTuning.MaxSpeedC, CrunchTuning.MaxSpoolSeconds));
+            Post(CrunchText.MsgSpoolStartOpen);
         }
 
         void TryEngage(Vessel v)
         {
             // Re-check with fresh positions: the ship may have turned or drifted during the spool.
             CrunchPlan plan;
-            if (!TryPlan(v, true, out plan)) return;
+            if (!TryPlan(v, true, true, out plan)) return;
 
             activeTier = plan.tier;
-            activeInterstellar = plan.interstellar;
+            activeWarpOk = plan.warpOk;
             activeDuration = plan.duration;
             activeRamp = plan.ramp;
+            legClosedLoop = plan.closedLoop;
+            legEndFraction = plan.endFraction;
+            legEndStop = -1.0;
+            plannedDone = 0.0;
+            turnSpooling = false;
             crunchBackwards = plan.backwards;
             latchedHeading = plan.heading;
             targetLocked = plan.locked;
@@ -483,6 +701,7 @@ namespace CrunchDrive
             lastBodyName = v.mainBody.name;
             elapsed = 0;
             traveled = 0;
+            fieldHold = CrunchTuning.TubeFadeInSeconds;   // The craft stays put while the tube of light grows to its full length.
             ResetWindow(v);
             phase = CrunchPhase.Crunching;
 
@@ -502,6 +721,7 @@ namespace CrunchDrive
             turnSettled = 0.0;
             sasFailLogged = false;
             turnFallback = false;
+            turnSpooling = false;
             ReleaseWarp();
 
             if (!sasChanged)
@@ -578,7 +798,9 @@ namespace CrunchDrive
         // points at the target within the alignment tolerance.
         void TickTurn(Vessel v, double dt)
         {
-            ReleaseWarp();   // A player who warps during the turn just gets dropped back to 1x.
+            // A player who warps during the turn just gets dropped back to 1x, except during the second spool:
+            // by then the craft is aligned with the target, and nothing needs steering until the spool is done.
+            if (!(turnSpooling && CrunchTuning.AllowWarp)) ReleaseWarp();
 
             Vector3d tp;
             if (!TryGetTargetPosition(lockedTarget, out tp)) { End(CrunchText.StopTargetLost); return; }
@@ -594,6 +816,23 @@ namespace CrunchDrive
             Vector3d nose = ((Vector3d)v.ReferenceTransform.up).normalized;
             double err = AngleDeg(nose * -1.0, dir);
             Status = CrunchText.StatusTurning(lockedTargetName, err);
+
+            // The second spool under time warp: only the charge is drawn. When it is done warp drops to 1x, and the craft
+            // is judged aligned again in physics before the second leg starts.
+            if (turnSpooling && !spoolFinished && (v.packed || TimeWarp.CurrentRate > 1.0f))
+            {
+                if (StepTurnSpool(v, dt))
+                {
+                    ReleaseWarp();
+                    turnSettled = 0.0;
+                }
+                else
+                {
+                    if (TimeWarp.CurrentRate > 1.0f) StepWarpDown(SpoolSecondsLeft(), CrunchTuning.WarpSpoolFinalSeconds);
+                    Status = CrunchText.StatusSpooling(spoolSeconds, SpoolTierFor(spoolSeconds), spoolRate, false);
+                }
+                return;
+            }
 
             // Still unpacking after time warp: nothing can steer yet.
             if (v.packed) { turnSettled = 0.0; return; }
@@ -637,35 +876,66 @@ namespace CrunchDrive
                 turnSettled += dt;
             else
                 turnSettled = 0.0;
-            if (turnSettled < CrunchTuning.TurnSettleSeconds) return;
+            if (turnSettled < CrunchTuning.TurnSettleSeconds && !turnSpooling) return;
 
-            // Aligned: plan the second leg from the real distance left and start it.
+            // Aligned: the Casimir blades spin up again before the second field can form, for as long as the first spool took, so the
+            // second leg gets the same coefficient. The charge comes from whatever is stored now (a reactor or solar panels may have
+            // refilled the batteries during the turn); if it runs out the spool ends there and the leg is flown at that speed.
+            // The craft keeps steering to the target meanwhile; the field forms once the spool is done and the craft is still aligned.
+            if (!turnSpooling)
+            {
+                double remaining0 = StopDistance(lockedTarget, distance);
+                if (remaining0 <= 0.0) { End(StopAt(lockedTarget, lockedTargetName), true); return; }
+
+                turnSpooling = true;
+                BeginSpool(v, firstSpoolSeconds);
+                Debug.Log(string.Format("[CrunchDrive] Second spool: drawing {0:N0} EC/s for {1:F1} s to match the first leg's {2:G4}c, {3:N0} EC stored, {4:E3} m to go.",
+                    spoolRate, firstSpoolSeconds, SpoolTierFor(firstSpoolSeconds), ReadStored(v), remaining0));
+                Post(CrunchText.MsgSpoolStart(firstSpoolSeconds));
+            }
+
+            if (!spoolFinished)
+            {
+                if (!StepTurnSpool(v, dt))
+                {
+                    Status = CrunchText.StatusSpooling(spoolSeconds, SpoolTierFor(spoolSeconds), spoolRate, false);
+                    return;
+                }
+            }
+            if (turnSettled < CrunchTuning.TurnSettleSeconds) return;   // Drifted off during the spool: settle again first.
+
+            // Spooled and aligned: size the second leg from the real distance left, at the speed that was paid for, and start it.
             double remaining = StopDistance(lockedTarget, distance);
             if (remaining <= 0.0) { End(StopAt(lockedTarget, lockedTargetName), true); return; }
 
-            bool interstellar2 = IsInterstellar(distance);
-            double tier, duration, ramp;
-            LegTiming(interstellar2, remaining, out tier, out duration, out ramp);
-            if (duration < CrunchTuning.MinCrunchSeconds) { End(StopAt(lockedTarget, lockedTargetName), true); return; }
+            double tier = CrunchMath.LegSpeed(spoolTier, CrunchTuning.MaxSpeedC, CrunchTuning.RampSeconds, remaining, 0.0, CrunchTuning.MinCrunchSeconds);
+            if (tier < CrunchTuning.MinSpeedC * 0.999) { End(StopAt(lockedTarget, lockedTargetName), true); return; }
+            double duration = CrunchMath.SecondsForDistance(remaining, tier);
 
             // Hand the attitude to SAS for the second leg, so the craft holds its heading while the field is up.
             if (turnCtl.Running) { turnCtl.End(); HoldAntiTargetSas(v); }
 
             activeTier = tier;
-            activeInterstellar = interstellar2;
+            activeWarpOk = duration >= CrunchTuning.WarpMinLegSeconds;
             activeDuration = duration;
-            activeRamp = ramp;
+            activeRamp = RampFor(duration);
+            legClosedLoop = true;
+            legEndFraction = 0.0;
+            legEndStop = -1.0;
+            plannedDone = 0.0;
+            turnSpooling = false;
             crunchBackwards = true;
             latchedHeading = dir;
             elapsed = 0.0;
+            fieldHold = CrunchTuning.TubeFadeInSeconds;
             lastUt = -1.0;
             leg = 2;
             turning = false;
             logTimer = 0.0;
             ResetWindow(v);
 
-            Debug.Log(string.Format("[CrunchDrive] Aligned ({0:F2} deg, {1:F2} deg/s). Second leg: {2:E3} m in {3:F2} s, backwards.",
-                err, rate, remaining, duration));
+            Debug.Log(string.Format("[CrunchDrive] Aligned ({0:F2} deg, {1:F2} deg/s). Second leg: {2:E3} m in {3:F2} s at {4:G4}c, backwards.",
+                err, rate, remaining, duration, tier));
             Post(CrunchText.MsgSecondLeg);
         }
 
@@ -1081,33 +1351,58 @@ namespace CrunchDrive
 
         // ---- Per-tick logic ----
 
-        // Distance to move this tick along whichever curve the crunch uses.
+        // Distance to move this tick along the speed curve (ramp up, cruise, ramp down).
         double CurveDisplacement(double stepDt)
         {
-            if (activeInterstellar)
-                return CrunchMath.TrapezoidDisplacementPerTick(activeTier, elapsed, stepDt, activeDuration,
-                                                               activeRamp);
-            return CrunchMath.SpringDisplacementPerTick(activeTier, elapsed, stepDt, activeDuration,
-                                                        CrunchTuning.SpringStiffness, CrunchTuning.SpringLaunch,
-                                                        CrunchTuning.EndSpeedFraction);
+            return CrunchMath.TrapezoidDisplacementPerTick(activeTier, elapsed, stepDt, activeDuration, activeRamp);
         }
 
         // Current speed as a multiple of the average tier, for the readout.
         double CurveSpeedFactor()
         {
             double progress = System.Math.Min(1.0, elapsed / activeDuration);
-            if (activeInterstellar)
-                return CrunchMath.TrapezoidSpeedFactor(progress, activeRamp);
-            return CrunchMath.SpringSpeedFactor(progress, CrunchTuning.SpringStiffness, CrunchTuning.SpringLaunch,
-                                                CrunchTuning.EndSpeedFraction);
+            return CrunchMath.TrapezoidSpeedFactor(progress, activeRamp);
         }
 
-        // On-rails time warp is allowed only for interstellar crunches (experimental, see CrunchTuning).
+        // Time warp is allowed while the blades spool, and for long legs (see CrunchTuning.WarpMinLegSeconds; experimental).
         bool WarpAllowed()
         {
-            if (!CrunchTuning.AllowInterstellarWarp) return false;
-            if (phase == CrunchPhase.Ready) return spoolInterstellar;
-            return phase == CrunchPhase.Crunching && activeInterstellar;
+            if (!CrunchTuning.AllowWarp) return false;
+            if (phase == CrunchPhase.Spooling) return true;
+            if (phase == CrunchPhase.Ready) return true;   // Engaging checks that the leg is long enough for warp.
+            if (phase != CrunchPhase.Crunching) return false;
+            if (turning && turnSpooling) return true;   // The second spool, like the first: the craft already points at the target.
+            return activeWarpOk;
+        }
+
+        // Steps time warp down as a spool or leg nears its end, as a staircase: warp is back to 1x finalSeconds before
+        // it ends, and each rate below the starting one is held for WarpStepSeconds of real time on the way down.
+        // Until the staircase begins, warp is left alone (the player's choice).
+        // Bodies near some stars move at hundreds of km/s, and one frame of high warp is thousands of game seconds,
+        // so the last stretch has to run at normal speed.
+        // gameSecondsLeft is the game time left until the spool or leg ends.
+        void StepWarpDown(double gameSecondsLeft, double finalSeconds)
+        {
+            if (TimeWarp.CurrentRate <= 1.0f) return;
+
+            // Game seconds until warp has to be 1x. A rate is allowed while enough time is left to step down
+            // through every slower rate (except 1x itself) at WarpStepSeconds of real time each.
+            double toOneX = gameSecondsLeft - finalSeconds;
+            float[] rates = TimeWarp.fetch.warpRates;
+            int target = 0;
+            double needed = 0.0;
+            for (int k = 1; k < rates.Length; k++)
+            {
+                if (toOneX >= needed) target = k;   // Enough time to descend from rate k.
+                needed += CrunchTuning.WarpStepSeconds * rates[k];
+            }
+
+            if (TimeWarp.CurrentRateIndex > target)
+            {
+                Debug.Log(string.Format("[CrunchDrive] Slowing time warp to {0:G}x ({1:F1} game seconds until it ends).",
+                    rates[target], gameSecondsLeft));
+                TimeWarp.SetRate(target, false, false);
+            }
         }
 
         void FixedUpdate()
@@ -1119,6 +1414,7 @@ namespace CrunchDrive
             Vessel v = FlightGlobals.ActiveVessel;
             if (v == null || v != crunchVessel) { End(CrunchText.StopVesselChanged); return; }
             if (TimeWarp.CurrentRate > 1.0f && !WarpAllowed()) { End(CrunchText.StopTimeWarp); return; }
+            if (!HasDrive(v)) { End(CrunchText.StopDriveLost); return; }
 
             double dt = TimeWarp.fixedDeltaTime;
 
@@ -1137,16 +1433,29 @@ namespace CrunchDrive
 
             if (phase == CrunchPhase.Spooling)
             {
-                spoolElapsed += dt;
-                if (spoolElapsed >= CrunchTuning.SpoolSeconds)
+                if (StepSpool(v, dt))
                 {
-                    phase = CrunchPhase.Ready;
-                    Status = CrunchText.StatusReady;
-                    Post(CrunchText.MsgReady);
+                    FinishSpool(v, true, false);   // A full spool.
+                }
+                else if (SpoolRanDry())
+                {
+                    // The craft ran out of charge. The spool ends and the speed stays where it got to, unless it never got past the minimum.
+                    if (spoolSeconds < CrunchTuning.MinSpoolSeconds)
+                    {
+                        Debug.Log(string.Format("[CrunchDrive] Spool ran dry after {0:F1} s: {1:N0} EC drawn, asking for {2:N0} EC/s, {3:N0} EC left on the craft.",
+                            spoolElapsed, spoolCharge, spoolRate, ReadStored(v)));
+                        End(CrunchText.StopNoCharge(spoolCharge, spoolRate));
+                    }
+                    else
+                    {
+                        FinishSpool(v, false, true);
+                    }
                 }
                 else
                 {
-                    Status = CrunchText.StatusSpooling(spoolElapsed, CrunchTuning.SpoolSeconds);
+                    // A spool under time warp slows the warp down before it ends by itself, like a crunch leg does.
+                    if (TimeWarp.CurrentRate > 1.0f) StepWarpDown(SpoolSecondsLeft(), CrunchTuning.WarpSpoolFinalSeconds);
+                    Status = CrunchText.StatusSpooling(spoolSeconds, SpoolTierFor(spoolSeconds), spoolRate, spoolSeconds >= CrunchTuning.MinSpoolSeconds);
                 }
                 return;
             }
@@ -1160,8 +1469,14 @@ namespace CrunchDrive
             // ---- Crunching ----
             if (FlightGlobals.VesselsLoaded.Count > 1) { End(CrunchText.StopOtherVessel); return; }
 
-            // Between the legs the craft coasts while SAS turns it around.
+            // Between the legs the craft coasts while it turns around.
             if (turning) { TickTurn(v, dt); return; }
+
+            // While the field is up the craft can't be steered or spun.
+            LockOutRotation(v);
+
+            // The field forms first: the craft doesn't move until the tube of light has reached its full length.
+            if (fieldHold > 0.0) { fieldHold -= dt; return; }
 
             // Game seconds this tick: one physics step normally, more under time warp.
             double ut = Planetarium.GetUniversalTime();
@@ -1183,13 +1498,14 @@ namespace CrunchDrive
             double dist = CurveDisplacement(stepDt);
 
             // Re-aim at the target every tick, so frame rotation or target motion can't bend the path.
-            Vector3d p0 = v.GetWorldPos3D();
+            bool exact = v.packed;   // Packed (on-rails warp): use orbit positions at this exact time.
+            Vector3d p0 = ShipPos(v, exact, ut);
             Vector3d heading = latchedHeading;
             double toTarget = -1.0;
             if (targetLocked)
             {
                 Vector3d tp;
-                if (TryGetTargetPosition(lockedTarget, out tp))
+                if (TargetPos(lockedTarget, exact, ut, out tp))
                 {
                     Vector3d to = tp - p0;
                     if (to.sqrMagnitude > 1.0)
@@ -1201,13 +1517,42 @@ namespace CrunchDrive
                 }
             }
 
+            // Closed loop: the target keeps moving (some orbit a neutron star at hundreds of km/s), so the distance planned at
+            // the start of the leg can be wrong by the end. Scale this tick's step so the leg finishes exactly at its stopping point.
+            if (legClosedLoop && toTarget >= 0.0)
+            {
+                double stopNow = StopDistance(lockedTarget, toTarget);
+                if (legEndStop < 0.0) legEndStop = stopNow * legEndFraction;
+                double plannedRemaining = activeTier * CrunchMath.C * activeDuration - plannedDone;
+                plannedDone += dist;
+                if (plannedRemaining > 1.0 && dist > 0.0)
+                {
+                    double scale = (stopNow - legEndStop) / plannedRemaining;
+                    dist *= System.Math.Max(0.5, System.Math.Min(2.0, scale));
+                }
+            }
+
+            // Slow time warp down before the speed starts to fall, by the clock and by the distance left.
+            if (TimeWarp.CurrentRate > 1.0f)
+            {
+                double rampSeconds = activeRamp * activeDuration;
+                double left = activeDuration - elapsed - rampSeconds;   // Until the ramp-down starts.
+                if (legClosedLoop && toTarget >= 0.0)
+                {
+                    double cruise = activeTier * CrunchMath.C * CrunchMath.TrapezoidPeakFactor(activeRamp);
+                    double rampDownDistance = 0.5 * cruise * rampSeconds;
+                    left = System.Math.Min(left, (StopDistance(lockedTarget, toTarget) - legEndStop - rampDownDistance) / cruise);
+                }
+                StepWarpDown(left, CrunchTuning.WarpFinalSeconds);
+            }
+
             // Sweep this tick's segment against every body's dropout sphere.
             Vector3d p1 = p0 + heading * dist;
             double bestT = 2.0;
             CelestialBody hit = null;
             foreach (CelestialBody b in FlightGlobals.Bodies)
             {
-                double? t = CrunchMath.SweepEntry(V(p0), V(p1), V(b.position), DropoutRadius(b));
+                double? t = CrunchMath.SweepEntry(V(p0), V(p1), V(BodyPos(b, exact, ut)), DropoutRadius(b));
                 if (t.HasValue && t.Value < bestT) { bestT = t.Value; hit = b; }
             }
 
@@ -1220,13 +1565,21 @@ namespace CrunchDrive
             // Distance left to the stopping point (the dropout zone edge for a planet or moon), not to the target's center.
             lastToTarget = toTarget >= 0.0 ? System.Math.Max(0.0, StopDistance(lockedTarget, toTarget) - moveDist) : -1.0;
 
-            // Dropping out at a body's zone, or reaching a targeted planet or moon, counts as arriving.
-            if (hit != null) { End(CrunchText.StopDropout(hit.name), true); return; }
+            // Dropping out at a body's zone counts as arriving only when that is the body being targeted (or nothing is
+            // targeted). Hitting some other body's zone on the way, say a moon of the target, ends the crunch without
+            // any arrival assistance.
+            if (hit != null)
+            {
+                bool intended = !targetLocked || ReferenceEquals(hit, lockedTarget);
+                End(CrunchText.StopDropout(hit.name), intended);
+                return;
+            }
             if (lastTick)
             {
                 // End of the first leg: coast and turn instead of finishing.
                 if (twoLeg && leg == 1) { BeginTurn(v); return; }
-                End(CrunchText.StopDuration, targetLocked);
+                // Running out of time counts as arriving only when the leg was timed to reach the target's stopping point.
+                End(CrunchText.StopDuration, targetLocked && legClosedLoop);
                 return;
             }
 
@@ -1240,8 +1593,9 @@ namespace CrunchDrive
             Vector3d nose = ((Vector3d)v.ReferenceTransform.up).normalized;
             Vector3d axis = crunchBackwards ? nose * -1.0 : nose;
             double offAxis = AngleDeg(axis, heading);
+            OffAxisDeg = offAxis;
 
-            // Live speed for the readout (both curves change it throughout the crunch).
+            // Live speed for the readout (the curve changes it throughout the crunch).
             double shownC = activeTier * CurveSpeedFactor();
 
             string lockInfo = (targetLocked && lastToTarget >= 0.0)
@@ -1317,6 +1671,8 @@ namespace CrunchDrive
             targetLocked = false;
             lockedTarget = null;
             turning = false;
+            turnSpooling = false;
+            spoolDryTime = 0.0;
             twoLeg = false;
             Status = CrunchText.StatusIdleBecause(reason);
 

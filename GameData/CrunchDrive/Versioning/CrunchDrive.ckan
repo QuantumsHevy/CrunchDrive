@@ -1,0 +1,12 @@
+depends:
+  - name: ModuleManager
+  - name: B9PartSwitch
+recommends:
+  - name: NearFutureElectrical
+  - name: VABOrganizer
+  - name: CommunityTechTree
+suggests:
+  - name: KerbalJointReinforcementContinued
+  - name: EditorExtensionsRedux
+  - name: MechJeb2
+  - name: ZTheme

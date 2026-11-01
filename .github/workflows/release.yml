@@ -1,0 +1,89 @@
+name: Package and release mod ZIP
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set ZIP file name
+        id: naming
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "zip_name=CrunchDrive-${{ github.event.release.tag_name }}.zip" >> "$GITHUB_OUTPUT"
+          else
+            echo "zip_name=CrunchDrive-manual-test-${{ github.run_number }}.zip" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check the version file matches the release tag
+        if: github.event_name == 'release'
+        run: |
+          VERSION_FILE=$(find GameData/CrunchDrive -maxdepth 1 -name '*.version' | head -n 1)
+          if [ -z "$VERSION_FILE" ]; then
+            echo "::error::No .version file found in GameData/CrunchDrive."
+            exit 1
+          fi
+          # Strip a UTF-8 byte order mark, if the file has one, so jq can read it.
+          FILE_VERSION=$(sed '1s/^\xEF\xBB\xBF//' "$VERSION_FILE" | jq -r '"\(.VERSION.MAJOR).\(.VERSION.MINOR).\(.VERSION.PATCH)"')
+          TAG="${{ github.event.release.tag_name }}"
+          TAG="${TAG#v}"
+          echo "Version file says $FILE_VERSION, release tag says $TAG"
+          if [ "$FILE_VERSION" != "$TAG" ]; then
+            echo "::error::The .version file ($FILE_VERSION) does not match the release tag ($TAG)."
+            exit 1
+          fi
+
+      - name: Copy docs into mod folder
+        run: |
+          for f in README.md LICENSE CHANGELOG.md; do
+            [ -f "$f" ] && cp "$f" GameData/CrunchDrive/ || echo "Skipping $f (not found at repo root)"
+          done
+
+      - name: Zip only GameData contents
+        run: |
+          cd GameData
+          zip -r "../${{ steps.naming.outputs.zip_name }}" . -x '*.meta' -x '*/.DS_Store' -x '*/Thumbs.db'
+
+      - name: Verify the ZIP layout
+        run: |
+          ZIP="${{ steps.naming.outputs.zip_name }}"
+          TOP_LEVEL=$(unzip -Z1 "$ZIP" | cut -d/ -f1 | sort -u)
+          echo "Top-level entries found in zip:"
+          echo "$TOP_LEVEL"
+          if [ "$TOP_LEVEL" != "CrunchDrive" ]; then
+            echo "::error::Expected the zip's only top-level folder to be 'CrunchDrive'. Found: $TOP_LEVEL"
+            exit 1
+          fi
+          if ! unzip -Z1 "$ZIP" | grep -q '^CrunchDrive/.*\.dll$'; then
+            echo "::error::No plugin .dll in the zip. Build in Release and commit the .dll under GameData/CrunchDrive."
+            exit 1
+          fi
+          if ! unzip -Z1 "$ZIP" | grep -q '^CrunchDrive/[^/]*\.version$'; then
+            echo "::error::No .version file in the zip."
+            exit 1
+          fi
+          echo "Zip contents:"
+          unzip -Z1 "$ZIP"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.naming.outputs.zip_name }}
+          path: ${{ steps.naming.outputs.zip_name }}
+
+      - name: Attach ZIP to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: ${{ steps.naming.outputs.zip_name }}

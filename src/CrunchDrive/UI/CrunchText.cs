@@ -6,26 +6,31 @@ namespace CrunchDrive
     public static class CrunchText
     {
         // Debug Logs
-        public const string LogNoGlowMaterial = "[CrunchDrive] No material on the part has an _EmissiveColor, so its emissive glow will not change.";
+        public const string LogBootstrapPassed = "[CrunchDrive] Kerbal Space Program launched successfully with a CrunchDrive build.";
+        public static string LogFlightSceneEntered(string vessel)
+        {
+            return string.Format("[CrunchDrive] {0} has entered the flight scene.", vessel);
+        }
+        public const string LogNoGlowMaterial = "[CrunchDrive] No material on the part has _EmissiveColor. Emissive glow will not change.";
         public static string LogGlowMaterials(int materials, int renderers)
         {
-            return string.Format("[CrunchDrive] The emissive glow drives {0} material(s) out of {1} renderer(s) on the part.", materials, renderers);
+            return string.Format("[CrunchDrive] Emissive glow drives {0} material(s) out of {1} renderer(s) on the part.", materials, renderers);
         }
-        public const string LogNoTubeShader = "[CrunchDrive] No particle shader was found, so the tube of light will not be drawn.";
-        public const string LogTubeAdditive = "[CrunchDrive] That shader is additive, so the craft may show through the tube of light.";
+        public const string LogNoTubeShader = "[CrunchDrive] No particle shader was found, some effects will not be drawn.";
+        public const string LogTubeAdditive = "[CrunchDrive] Detected shader is additive. Parts may show through effects.";
         public static string LogTubeMeasured(double radius, double forward, double backward, double craftLength)
         {
-            return string.Format("[CrunchDrive] Tube of light measured: radius {0:F1} m, {1:F1} m FWD and {2:F1} m BCK of the ring (craft length {3:F1} m).", radius, forward, backward, craftLength);
+            return string.Format("[CrunchDrive] Measured effects: radius {0:F1} m, {1:F1} m fore and {2:F1} m aft of the ring (craft length {3:F1} m).", radius, forward, backward, craftLength);
         }
         public static string LogTubeSources(int renderers, int parts, string forwardPart, double forwardAlong, double forwardRadial,
                                             string backwardPart, double backwardAlong, double backwardRadial)
         {
-            return string.Format("[CrunchDrive] Tube of light measured from {0} mesh renderers on {1} parts. Forward end set by {2} ({3:F1} m along, {4:F1} m from the axis); backward end set by {5} ({6:F1} m along, {7:F1} m from the axis).",
+            return string.Format("[CrunchDrive] Effects measured from {0} mesh renderers on {1} parts. Forward end set by {2} ({3:F1} m along, {4:F1} m from the axis); backward end set by {5} ({6:F1} m along, {7:F1} m from the axis).",
                 renderers, parts, forwardPart, forwardAlong, forwardRadial, backwardPart, backwardAlong, backwardRadial);
         }
         public static string LogTubePoking(int corners)
         {
-            return "[CrunchDrive] " + corners + " corners of the craft are wider than the tube of light can cover, so those parts will stick out of it.";
+            return "[CrunchDrive] " + corners + " corners of the craft are wider than what the effects conceal. Some parts will stick out.";
         }
 
         // Part (right-click menu and action groups)
@@ -48,17 +53,13 @@ namespace CrunchDrive
         public const string FieldRange = "Fixed-time Range";
         public const string FieldDraw = "Spool Power Draw";
         public const string FieldDropoutAltitude = "Dropout Altitude";
-        public const string FieldDropoutNearest = "Nearest Dropout Zone";
+        public const string FieldDropoutNearest = "Nearest Dropout";
         public const string FieldMode = "Travel Mode";
         public const string ToggleOn = "ON";
         public const string ToggleOff = "OFF";
         public const string StatusStandby = "STANDBY";
-        public const string ActionPrimary = "Crunch Field (STAR / ENGAGE / COLLAPSE)";
-        public const string ModuleInfo =
-            "Generates a Casimir-compressed gravity well in front of the craft.\n" +
-            "This drives the vessel through a short-lived spacetime compression that releases at extreme velocity, with optional capture assistance and automatic approach controls.\n\n" +
-            "Travel modes: Full-distance, Half-distance, & Fixed-time.\n" +
-            "Range and peak compression depend on the drive's power level and target geometry.";
+        public const string ActionPrimary = "Crunch Field (START / ENGAGE / COLLAPSE)";
+        public const string ModuleInfo = "Generates a Casimir-compressed gravity well in front of the craft. Range and compression depend on power level and target geometry.";
         public static string ButtonDirection(bool backwards) { return "Field Direction: " + DirLong(backwards); }
 
         public static string FieldCoefficientValue(double tierC) { return string.Format("{0:G3}c", tierC); }
@@ -154,12 +155,12 @@ namespace CrunchDrive
 
         public static string StatusSpooling(double elapsed, double tierC, double ecPerSecond, bool canEngage)
         {
-            return string.Format("SPOOLING\nCasimir blades are spinning up.\n{0:F1} s ({1:G3}c)\nDrawing {2:N0} EC/s.\n", elapsed, tierC, ecPerSecond)
-                 + (canEngage ? "Engage whenever the coefficient is high enough.\n" : "")
-                 + "Throttle and translation have been locked out.";
+            return string.Format("SPOOLING\nCasimir blades spinning up.\n{0:F1} s ({1:G3}c)\nDraw: {2:N0} EC/s.\n", elapsed, tierC, ecPerSecond)
+                 + (canEngage ? "Engage when the coefficient is sufficient.\n" : "")
+                 + "Throttle and translation are locked out.";
         }
 
-        public const string StatusReady = "READY\nEnough negative energy has been accumulated for compression.\nWaiting for engagement.";
+        public const string StatusReady = "READY\nNegative energy threshold reached.\nWaiting for engagement.";
 
         // lockInfo is either empty or starts with "\n" (see StatusTarget).
         public static string StatusCrunching(bool backwards, double tierC, double elapsed, double duration,
@@ -178,7 +179,7 @@ namespace CrunchDrive
 
         public static string StatusTurning(string target, double offDeg)
         {
-            return string.Format("TURNING\nCrunch field is down. Coasting.\nTrailing region is {1:F0} degrees off {0}.", target, offDeg);
+            return string.Format("TURNING\nField inactive.\nTrailing region offset: {1:F0}° from {0}.", target, offDeg);
         }
 
         public static string StatusTarget(string name, double meters, bool isBody)
@@ -204,21 +205,21 @@ namespace CrunchDrive
         public const string ScreenPrefix = "[CrunchDrive] ";
         public static string MsgSpoolStart(double seconds)
         {
-            return string.Format("Casimir blades are spinning up ({0:F1} s).", seconds);
+            return string.Format("Spool started ({0:F1} s).", seconds);
         }
-        public const string MsgSpoolStartOpen = "Casimir blades are spinning up. A longer spool compresses the field harder.";
+        public const string MsgSpoolStartOpen = "Spool started.";
         public static string MsgSpoolDry(double tierC)
         {
-            return string.Format("The craft ran out of electric charge. The Casimir blades stopped spinning up at {0:G3}c.", tierC);
+            return string.Format("Electric charge depleted. Casimir blades stopped accelerating at {0:G3}c.", tierC);
         }
         public static string MsgSpoolFull(double tierC)
         {
-            return string.Format("The Casimir blades are fully spun up ({0:G3}c).", tierC);
+            return string.Format("Casimir blades at full speed ({0:G3}c).", tierC);
         }
-        public const string MsgReady = "Enough negative energy has been accumulated for compression. Ready to engage.";
-        public static string MsgEngaged(string dir) { return "Crunch field formed (" + dir + ")."; }
-        public static string MsgRefused(string reason) { return "Crunch refused: " + reason; }
-        public static string MsgEnded(string reason) { return "Crunch ended: " + reason + " Engine controls restored."; }
+        public const string MsgReady = "Negative energy threshold reached. Ready for engagement.";
+        public static string MsgEngaged(string dir) { return "Compression field active (" + dir + ")."; }
+        public static string MsgRefused(string reason) { return "Compression refused: " + reason; }
+        public static string MsgEnded(string reason) { return "Compression ended: " + reason + " Engine controls restored."; }
         public static string MsgSpoolCancelled(string reason) { return "Spool cancelled: " + reason + " Engine controls restored."; }
         public static string MsgCaptureAssist(double fromSpeed, double toSpeed, string body)
         {
@@ -226,40 +227,40 @@ namespace CrunchDrive
         }
         public static string MsgIntercept(double fromSpeed, double toSpeed, string target)
         {
-            return string.Format("Capture assistance is putting the craft on an intercept with {2}: relative velocity {0:N0} to {1:N0} m/s.", fromSpeed, toSpeed, target);
+            return string.Format("Capture assistance set an intercept with {2}. Relative velocity: {0:N0} to {1:N0} m/s.", fromSpeed, toSpeed, target);
         }
-        public const string MsgTurnControllerFallback = "The attitude controller found no torque to steer with. Attempting SAS...";
-        public const string MsgWarpDropped = "Time warp was released.";
-        public const string MsgFirstLegDone = "Halfway point reached; compression field is down. Preparing for trailing crunch...";
-        public const string MsgSecondLeg = "Trailing region aligned with target. Second crunch field formed.";
+        public const string MsgTurnControllerFallback = "Attitude controller found no steering torque. Attempting SAS.";
+        public const string MsgWarpDropped = "Time warp released.";
+        public const string MsgFirstLegDone = "Halfway point reached. Compression field stopped. Preparing trailing crunch.";
+        public const string MsgSecondLeg = "Trailing region aligned with target. Second compression field active.";
 
         // Reasons
-        public const string RefuseNoDrive = "The craft has no crunch drive.";
-        public const string RefuseTimeWarp = "Time warp is active.";
-        public const string RefuseOtherVessels = "Other craft are loaded nearby.";
-        public const string RefuseAtmosphere = "The craft is inside an atmosphere.";
-        public const string RefuseEnginesActive = "Reaction engines are active.";
-        public static string RefuseZone(string body) { return "The craft is inside " + body + "'s dropout zone."; }
+        public const string RefuseNoDrive = "No crunch drive installed.";
+        public const string RefuseTimeWarp = "Time warp active.";
+        public const string RefuseOtherVessels = "Other craft loaded nearby.";
+        public const string RefuseAtmosphere = "Craft inside an atmosphere.";
+        public const string RefuseEnginesActive = "Reaction engines active.";
+        public static string RefuseZone(string body) { return "Craft inside " + body + "'s dropout zone."; }
         public static string RefuseNotAligned(double errDeg, double tolDeg)
         {
-            return string.Format("The craft is pointed {0:F1} degrees off its target (limit {1:F1}).", errDeg, tolDeg);
+            return string.Format("Craft pointed {0:F1} degrees off target (limit {1:F1}).", errDeg, tolDeg);
         }
-        public const string RefuseNoTarget = "This travel mode needs a selected target.";
-        public const string RefuseTooClose = "The target is too close to form a crunch field.";
+        public const string RefuseNoTarget = "A target is required for this travel mode.";
+        public const string RefuseTooClose = "Target is too close for field generation.";
 
-        public const string StopByPlayer = "Stopped by the player.";
-        public const string StopDriveLost = "The crunch drive was lost.";
-        public const string StopVesselChanged = "The active craft changed.";
-        public const string StopTimeWarp = "Time warp was engaged.";
+        public const string StopByPlayer = "Stopped by player.";
+        public const string StopDriveLost = "Crunch drive lost.";
+        public const string StopVesselChanged = "Active craft changed.";
+        public const string StopTimeWarp = "Time warp engaged.";
         public const string StopOtherVessel = "Another craft entered physics range.";
         public const string StopEngineThrust = "Engine vibrations unbalanced the Casimir blades.";
-        public const string StopTargetLost = "The target was lost.";
-        public const string StopDuration = "The field collapsed naturally.";
+        public const string StopTargetLost = "Target lost.";
+        public const string StopDuration = "Field collapsed naturally.";
         public static string StopNoCharge(double drawn, double rate)
         {
-            return string.Format("The craft ran out of electric charge before the Casimir blades had spun up. They drew {0:N0} EC ({1:N0} EC/s).", drawn, rate);
+            return string.Format("Electric charge was depleted before Casimir blades reached operating speed. Drawn {0:N0} EC ({1:N0} EC/s).", drawn, rate);
         }
-        public static string StopNearVessel(string vessel) { return "The craft left crunch near " + vessel + "."; }
-        public static string StopDropout(string body) { return "The craft left crunch near " + body + "'s dropout zone."; }
+        public static string StopNearVessel(string vessel) { return "Crunch ended near " + vessel + "."; }
+        public static string StopDropout(string body) { return "Crunch ended near " + body + "'s dropout zone."; }
     }
 }

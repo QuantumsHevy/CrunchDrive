@@ -16,7 +16,6 @@ Patches that add compatibility with these mods are included with installation.
 - [Community Tech Tree](https://github.com/post-kerbin-mining-corporation/CommunityTechTree)
 - [VABOrganizer](https://github.com/KSPModStewards/VABOrganizer)
 
-
 ## Installation
 
 Download the latest ZIP and extract the folder directly into your installation's `GameData` folder using File Explorer's "Extract all" option.

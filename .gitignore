@@ -5,7 +5,7 @@
 
 # clone files
 KSP.local.props
-GameData/CrunchDrive/Plugins/*.dll
+# GameData/CrunchDrive/Plugins/*.dll
 GameData/CrunchDrive/Plugins/*.pdb
 GameData/CrunchDrive/Parts/@thumbs/
 

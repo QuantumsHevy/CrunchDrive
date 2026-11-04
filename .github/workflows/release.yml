@@ -63,12 +63,12 @@ jobs:
             echo "::error::Expected the zip's only top-level folder to be 'CrunchDrive'. Found: $TOP_LEVEL"
             exit 1
           fi
-          if ! unzip -Z1 "$ZIP" | grep -q '^CrunchDrive/.*\.dll$'; then
-            echo "::error::No plugin .dll in the zip. Build in Release and commit the .dll under GameData/CrunchDrive."
+          if ! unzip -Z1 "$ZIP" | grep -q '^CrunchDrive/Plugins/CrunchDrive\.dll$'; then
+            echo "::error::No plugin .dll in the zip. Build in Release and commit the .dll under GameData/CrunchDrive/Plugins."
             exit 1
           fi
-          if ! unzip -Z1 "$ZIP" | grep -q '^CrunchDrive/[^/]*\.version$'; then
-            echo "::error::No .version file in the zip."
+          if ! unzip -Z1 "$ZIP" | grep -q '^CrunchDrive/Versioning/[^/]*\.version$'; then
+            echo "::error::No .version file in the zip. Expected under GameData/CrunchDrive/Versioning."
             exit 1
           fi
           echo "Zip contents:"

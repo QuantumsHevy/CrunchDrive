@@ -137,10 +137,11 @@ namespace CrunchDrive
 
         // Spool (charging the Casimir blades). Used by the first spool and by the second one between the legs.
         double spoolElapsed;        // Game seconds since the spool started.
-        double spoolSeconds;        // Spool seconds paid for so far: the charge drawn divided by the draw rate. This sets the coefficient.
+        double spoolSeconds;        // Spool seconds paid for so far: the charge drawn divided by the charge one spool second costs. This sets the coefficient.
         double spoolTarget;         // Spool seconds at which the spool ends by itself.
         double spoolCharge;         // Charge (EC) drawn so far.
-        double spoolRate;           // Charge (EC) per second the spool draws.
+        double spoolRate;           // Charge (EC) per second the spool draws now: the player's setting on the primary drive, which can change during the spool.
+        double spoolNominal;        // Charge (EC) one spool second costs: the drive's nominal rate. A higher draw rate buys spool seconds faster, not cheaper.
         double spoolTier;           // Average speed (c) the finished spool has paid for.
         double firstSpoolSeconds;   // Length of the first spool, which the second spool repeats.
         bool spoolFinished;         // The second spool is over (it ran its length, or the craft ran out of charge).
@@ -203,8 +204,15 @@ namespace CrunchDrive
             return System.Math.Max(0.0, drive.part.RequestResource(id, amount, ResourceFlowMode.ALL_VESSEL));
         }
 
-        // Charge per second the craft's spool draws: the primary drive's own value.
+        // Charge per second the craft's spool draws: the player's setting on the primary drive.
         static double DrawRateFor(Vessel v)
+        {
+            ModuleCrunchDrive drive = ModuleCrunchDrive.PrimaryFor(v);
+            return drive != null ? drive.SpoolDrawRate : CrunchTuning.SpoolEcPerSecond;
+        }
+
+        // Charge one spool second costs: the primary drive's nominal rate, whatever draw rate the player has set.
+        static double NominalRateFor(Vessel v)
         {
             ModuleCrunchDrive drive = ModuleCrunchDrive.PrimaryFor(v);
             return drive != null ? drive.SpoolEcPerSecond : CrunchTuning.SpoolEcPerSecond;
@@ -252,6 +260,7 @@ namespace CrunchDrive
             spoolDryTime = 0.0;
             spoolLastUt = -1.0;
             spoolRate = DrawRateFor(v);
+            spoolNominal = NominalRateFor(v);
         }
 
         // True when the craft has been unable to supply the spool's full draw for long enough that the charge has run out.
@@ -263,11 +272,12 @@ namespace CrunchDrive
         // Game seconds until the spool ends by itself, if the craft keeps supplying it (for stepping time warp down).
         double SpoolSecondsLeft()
         {
-            return System.Math.Max(0.0, spoolTarget - spoolSeconds);
+            return System.Math.Max(0.0, spoolTarget - spoolSeconds) * spoolNominal / spoolRate;
         }
 
         // One tick of a spool: draws charge, and returns true once the spool has run its full length. The charge the craft can
-        // supply is what limits it: the spool draws spoolRate EC every game second, and a tick that gets less than that counts
+        // supply is what limits it: the spool draws spoolRate EC every game second (the player may change it during the spool,
+        // so it is read again every tick), and a tick that gets less than that counts
         // towards spoolDryTime. The caller ends the spool when SpoolRanDry() says so, and the speed stays where it got to.
         // Under time warp a tick is many game seconds, and the draw scales with them.
         bool StepSpool(Vessel v, double dt)
@@ -279,12 +289,13 @@ namespace CrunchDrive
             spoolLastUt = ut;
 
             spoolElapsed += gameDt;
-            double want = System.Math.Min(gameDt, System.Math.Max(0.0, spoolTarget - spoolSeconds)) * spoolRate;
+            spoolRate = DrawRateFor(v);
+            double want = System.Math.Min(gameDt * spoolRate, System.Math.Max(0.0, spoolTarget - spoolSeconds) * spoolNominal);
             if (want > 0.0)
             {
                 double got = DrawEnergy(v, want);
                 spoolCharge += got;
-                spoolSeconds += got / spoolRate;
+                spoolSeconds += got / spoolNominal;
                 if (got < want * 0.999) spoolDryTime += gameDt * (1.0 - got / want);   // Only the part of the tick that went unpaid counts as dry.
                 else spoolDryTime = 0.0;
             }
@@ -665,8 +676,8 @@ namespace CrunchDrive
             LockOutEngines(v);
             Status = CrunchText.StatusSpooling(0, CrunchTuning.MinSpeedC, spoolRate, false);
 
-            Debug.Log(string.Format("[CrunchDrive] Spool: drawing {0:N0} EC/s from {1:N0} EC stored; the coefficient rises from {2:G3}c ({3:F0} s) to {4:G3}c ({5:F0} s).",
-                spoolRate, stored, CrunchTuning.MinSpeedC, CrunchTuning.MinSpoolSeconds, CrunchTuning.MaxSpeedC, CrunchTuning.MaxSpoolSeconds));
+            Debug.Log(string.Format("[CrunchDrive] Spool: drawing {0:N0} EC/s ({6:N0} EC per spool second) from {1:N0} EC stored; the coefficient rises from {2:G3}c ({3:F0} s) to {4:G3}c ({5:F0} s).",
+                spoolRate, stored, CrunchTuning.MinSpeedC, CrunchTuning.MinSpoolSeconds, CrunchTuning.MaxSpeedC, CrunchTuning.MaxSpoolSeconds, spoolNominal));
             Post(CrunchText.MsgSpoolStartOpen);
         }
 

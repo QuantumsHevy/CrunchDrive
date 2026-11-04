@@ -99,14 +99,24 @@ namespace CrunchDrive
         [KSPField(guiActive = false, guiActiveEditor = false, guiName = CrunchText.FieldRange, groupName = TargetGroup, groupDisplayName = CrunchText.GroupTargetTitle)]
         public string rangeLine = "";
 
-        [KSPField(guiActive = false, guiActiveEditor = false, guiName = CrunchText.FieldDraw, groupName = MainGroup, groupDisplayName = CrunchText.GroupTitle)]
-        public string drawLine = "";
+        // Electric charge per second the spool draws, set by the player in the VAB/SPH or in flight (before and during a spool).
+        // A higher draw reaches a given coefficient sooner and a lower one is easier on the craft's power, but one spool second always
+        // costs the same charge (SpoolEcPerSecond below), so a given coefficient costs the same total charge.
+        [KSPField(isPersistant = true, guiActive = true, guiActiveEditor = true, guiName = CrunchText.FieldDraw, groupName = MainGroup, groupDisplayName = CrunchText.GroupTitle),
+         UI_FloatRange(minValue = (float)CrunchTuning.SpoolRateMinEc, maxValue = (float)CrunchTuning.SpoolRateMaxEc, stepIncrement = (float)CrunchTuning.SpoolRateStepEc, scene = UI_Scene.All)]
+        public float spoolDraw = 0f;   // 0 = not set yet: the first start uses the nominal rate.
 
-        // Electric charge per second this part's spool draws. Set it in the part's cfg (spoolEcPerSecond = ...); 0 uses CrunchTuning.SpoolEcPerSecond.
+        // Charge one spool second costs, and the draw a new part starts at. Set it in the part's cfg (spoolEcPerSecond = ...); 0 uses CrunchTuning.SpoolEcPerSecond.
         [KSPField(isPersistant = false)]
         public double spoolEcPerSecond = 0.0;
 
         public double SpoolEcPerSecond { get { return spoolEcPerSecond > 0.0 ? spoolEcPerSecond : CrunchTuning.SpoolEcPerSecond; } }
+
+        // The draw the spool uses now.
+        public double SpoolDrawRate
+        {
+            get { return Math.Max(CrunchTuning.SpoolRateMinEc, Math.Min(CrunchTuning.SpoolRateMaxEc, spoolDraw > 0f ? spoolDraw : SpoolEcPerSecond)); }
+        }
 
         [KSPField(guiActive = false, guiActiveEditor = false, guiName = CrunchText.FieldDropoutAltitude, groupName = TargetGroup, groupDisplayName = CrunchText.GroupTargetTitle)]
         public string dropoutAltitudeLine = "";
@@ -144,7 +154,7 @@ namespace CrunchDrive
         {
             nameof(coefficientLine), nameof(spoolLine), nameof(legLine), nameof(progressLine), nameof(speedLine),
             nameof(timeLine), nameof(traveledLine), nameof(offAxisLine), nameof(orbitalLine),
-            nameof(targetLine), nameof(distanceLine), nameof(rangeLine), nameof(drawLine),
+            nameof(targetLine), nameof(distanceLine), nameof(rangeLine), nameof(spoolDraw),
             nameof(dropoutAltitudeLine), nameof(dropoutNearestLine)
         };
 
@@ -204,6 +214,8 @@ namespace CrunchDrive
 
             // The mode names live in CrunchText, so they are handed to the selector here rather than in the attribute.
             SetOptions(Fields[nameof(travelMode)].uiControlEditor as UI_ChooseOption);
+
+            if (spoolDraw <= 0f) spoolDraw = (float)SpoolDrawRate;   // A new part starts at its nominal draw.
 
             glowCollected = false;   // The glow materials are gathered on first use, once the part's meshes are set up.
 
@@ -266,8 +278,7 @@ namespace CrunchDrive
             spoolLine = CrunchText.FieldSpoolValue(CrunchController.SpoolSecondsPaid, CrunchController.ActiveTierC);
             SetVisible(nameof(spoolLine), spooling);
 
-            drawLine = CrunchText.FieldDrawValue(SpoolEcPerSecond);
-            SetVisible(nameof(drawLine), !crunching);
+            SetVisible(nameof(spoolDraw), !crunching);   // The draw can be changed before and during a spool.
 
             legLine = CrunchText.FieldLegValue(CrunchController.CurrentLeg, CrunchController.ActiveBackwards);
             SetVisible(nameof(legLine), CrunchController.IsTwoLeg);

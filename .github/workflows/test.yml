@@ -22,4 +22,4 @@ jobs:
 
       # Only the test project is built: the plugin itself needs the KSP assemblies, which the runner does not have.
       - name: Run tests
-        run: dotnet test tests/CrunchDrive.Core.Tests --configuration Release --verbosity normal
+        run: dotnet test tests/CrunchDrives.Core.Tests --configuration Release --verbosity normal

@@ -5,9 +5,10 @@
 
 # clone files
 KSP.local.props
-# GameData/CrunchDrive/Plugins/*.dll
-GameData/CrunchDrive/Plugins/*.pdb
-GameData/CrunchDrive/Parts/@thumbs/
+GameData/LostSunsAdapted/CrunchDrives/Plugins/*.pdb
+GameData/LostSunsAdapted/CrunchDrives/Parts/@thumbs/
+# GameData/LostSunsAdapted/CrunchDrives/Plugins/*.dll
+
 
 # dotenv files
 .env

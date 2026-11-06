@@ -19,17 +19,17 @@ jobs:
         id: naming
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
-            echo "zip_name=CrunchDrive-${{ github.event.release.tag_name }}.zip" >> "$GITHUB_OUTPUT"
+            echo "zip_name=LostSunsAdapted-${{ github.event.release.tag_name }}.zip" >> "$GITHUB_OUTPUT"
           else
-            echo "zip_name=CrunchDrive-manual-test-${{ github.run_number }}.zip" >> "$GITHUB_OUTPUT"
+            echo "zip_name=LostSunsAdapted-manual-test-${{ github.run_number }}.zip" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Check the version file matches the release tag
         if: github.event_name == 'release'
         run: |
-          VERSION_FILE=$(find GameData/CrunchDrive -maxdepth 1 -name '*.version' | head -n 1)
+          VERSION_FILE=$(find GameData/LostSunsAdapted/CrunchDrives -maxdepth 1 -name '*.version' | head -n 1)
           if [ -z "$VERSION_FILE" ]; then
-            echo "::error::No .version file found in GameData/CrunchDrive."
+            echo "::error::No .version file found in GameData/LostSunsAdapted/CrunchDrives."
             exit 1
           fi
           # Strip a UTF-8 byte order mark, if the file has one, so jq can read it.
@@ -45,7 +45,7 @@ jobs:
       - name: Copy docs into mod folder
         run: |
           for f in README.md LICENSE CHANGELOG.md; do
-            [ -f "$f" ] && cp "$f" GameData/CrunchDrive/ || echo "Skipping $f (not found at repo root)"
+            [ -f "$f" ] && cp "$f" GameData/LostSunsAdapted/CrunchDrives/ || echo "Skipping $f (not found at repo root)"
           done
 
       - name: Zip only GameData contents
@@ -59,16 +59,16 @@ jobs:
           TOP_LEVEL=$(unzip -Z1 "$ZIP" | cut -d/ -f1 | sort -u)
           echo "Top-level entries found in zip:"
           echo "$TOP_LEVEL"
-          if [ "$TOP_LEVEL" != "CrunchDrive" ]; then
-            echo "::error::Expected the zip's only top-level folder to be 'CrunchDrive'. Found: $TOP_LEVEL"
+          if [ "$TOP_LEVEL" != "LostSunsAdapted" ]; then
+            echo "::error::Expected the zip's only top-level folder to be 'LostSunsAdapted'. Found: $TOP_LEVEL"
             exit 1
           fi
-          if ! unzip -Z1 "$ZIP" | grep -q '^CrunchDrive/Plugins/CrunchDrive\.dll$'; then
-            echo "::error::No plugin .dll in the zip. Build in Release and commit the .dll under GameData/CrunchDrive/Plugins."
+          if ! unzip -Z1 "$ZIP" | grep -q '^LostSunsAdapted/CrunchDrives/Plugins/LostSunsCrunchDrives\.dll$'; then
+            echo "::error::No plugin .dll in the zip. Build in Release and commit the .dll under GameData/LostSunsAdapted/CrunchDrives/Plugins."
             exit 1
           fi
-          if ! unzip -Z1 "$ZIP" | grep -q '^CrunchDrive/Versioning/[^/]*\.version$'; then
-            echo "::error::No .version file in the zip. Expected under GameData/CrunchDrive/Versioning."
+          if ! unzip -Z1 "$ZIP" | grep -q '^LostSunsAdapted/CrunchDrives/Versioning/[^/]*\.version$'; then
+            echo "::error::No .version file in the zip. Expected under GameData/LostSunsAdapted/CrunchDrives/Versioning."
             exit 1
           fi
           echo "Zip contents:"
